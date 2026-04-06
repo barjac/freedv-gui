@@ -304,13 +304,15 @@ Additional options are also available if you right-click on the Voice Keyer butt
 * "Use another voice keyer file": Allows you to trigger the voice keyer using a different file from the one configured in Tools->Options.
 * "Record new voice keyer file": Triggers transmit and records your microphone audio to a file that you select. Pushing the Voice Keyer button will stop recording.
 * "Monitor transmitted audio": Allows monitoring of audio while transmitting the voice keyer file. If enabled, a checkmark will appear next to this option.
+* "Adjust Monitor Volume...": Sets the monitoring volume level. Only available when "Monitor transmitted audio" is enabled.
 
 # Monitoring TX Audio
 
 FreeDV has the ability to monitor transmit audio. This can be useful for adjusting 
 microphone filters when your radio is plugged into a dummy load. To enable this,
 right-click on the PTT button and choose "Monitor transmitted audio". A checkmark
-will appear next to this menu option when enabled.
+will appear next to this menu option when enabled. The monitoring volume level can
+be adjusted by right-clicking the PTT button and choosing "Adjust Monitor Volume...".
 
 # Quick Record
 
@@ -442,7 +444,7 @@ repeating yourself.  The numbers above are on channels without fading
 is a few dB higher. The Fading column shows how robust the mode is to
 HF Fading channels, higher is more robust.
 
-The more advanced 700D and 2020 modes have a high latency due to the
+The more advanced 700D and 700E modes have a high latency due to the
 use of large Forward Error Correction (FEC) codes.  They buffer many
 frames of speech, which combined with PC sound card buffering results
 in end-to-end latencies of 1-2 seconds.  They may take a few seconds to
@@ -485,7 +487,7 @@ skill and practice when used with older, VFO based radios.
 
 ## FreeDV 700E
 
-FreeDV 700E was developed in December 2020 using lessons learned from on air operation of 700C and 700D.  A variant of 700D, it uses a shorter frame size (80ms) to reduce latency and sync time.  It is optimized for fast fading channels channels with up to 4Hz Doppler spread and 6ms delay spread.  FreeDV 7000E uses the same 700 bit/s codec as FreeDV 700D.  It requires about 3dB more power than 700D, but can operate reliably on fast fading channels.
+FreeDV 700E was developed in December 2020 using lessons learned from on air operation of 700C and 700D.  A variant of 700D, it uses a shorter frame size (80ms) to reduce latency and sync time.  It is optimized for fast fading channels channels with up to 4Hz Doppler spread and 6ms delay spread.  FreeDV 700E uses the same 700 bit/s codec as FreeDV 700D.  It requires about 3dB more power than 700D, but can operate reliably on fast fading channels.
 
 The 700E release also includes optional compression (clipping) of the 700D and 700E transmit waveforms to reduce the Peak to Average Power Ratio to about 4dB.  For example a 100W PEP transmitter can be driven to about 40W RMS.  This is an improvement of 6dB over previous releases of FreeDV 700D. Before enabling the clipper make sure your transmitter is capable of handling sustained high average power without damage.  
 
@@ -509,7 +511,8 @@ This section describes features on Tools-Filter.
 
 Control | Description
  -------------------------- | ------------------------------------------------------------------------ |
-Noise Suppression | Enable noise suppression, de-reverberation, AGC of mic signal using the Speex pre-processor
+Noise Suppression | Enable noise suppression of mic signal using the RNNoise pre-processor
+AGC | Enable Automatic Gain Control of mic signal using the EBU R128 loudness standard
 700D Auto EQ | Automatic equalization for FreeDV 700D/E Codec input audio
 
 Auto EQ (Automatic Equalization) adjusts the input speech spectrum to best fit the speech codec. It can remove annoying bass artifacts and make the codec speech easier to understand.
