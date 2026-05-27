@@ -245,7 +245,9 @@ void RADETransmitStep::restartVocoder() FREEDV_NONBLOCKING
         for (int n = 384; n < 576; n++) { rms2 += eooOut_[n].real * eooOut_[n].real; }
         for (int n = 576; n < 768; n++) { rms3 += eooOut_[n].real * eooOut_[n].real; }
         FREEDV_BEGIN_VERIFIED_SAFE
-        log_warn("TX EOO diag: s=2 RMS=%.4f s=3 RMS=%.4f", sqrtf(rms2/192.0f), sqrtf(rms3/192.0f));
+        log_warn("TX EOO diag: s=2 RMS=%.4f s=3 RMS=%.4f eooShort[0]=%d eooShort[384]=%d eooShort[576]=%d",
+                 sqrtf(rms2/192.0f), sqrtf(rms3/192.0f),
+                 (int)eooOutShort_[0], (int)eooOutShort_[384], (int)eooOutShort_[576]);
         FREEDV_END_VERIFIED_SAFE
     }
 
