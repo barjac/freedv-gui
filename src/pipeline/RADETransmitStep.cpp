@@ -225,10 +225,12 @@ void RADETransmitStep::restartVocoder() FREEDV_NONBLOCKING
         rade_tx_eoo(dv_, eooOut_);
     FREEDV_END_VERIFIED_SAFE
 
+    // Silence first so the resampler startup transient (from pipeline_->reset())
+    // affects only silence, not the EOO pilots.
     memset(eooOutShort_, 0, sizeof(short) * (numEOOSamples + NUM_SAMPLES_SILENCE));
     for (int index = 0; index < numEOOSamples; index++)
     {
-        eooOutShort_[index] = eooOut_[index].real * RADE_SCALING_FACTOR;
+        eooOutShort_[NUM_SAMPLES_SILENCE + index] = eooOut_[index].real * RADE_SCALING_FACTOR;
     }
 
     if (outputSampleFifo_.write(eooOutShort_, numEOOSamples + NUM_SAMPLES_SILENCE) != 0)
