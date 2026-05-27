@@ -232,12 +232,10 @@ void RADETransmitStep::restartVocoder() FREEDV_NONBLOCKING
         rade_tx_eoo(dv_, eooOut_);
     FREEDV_END_VERIFIED_SAFE
 
-    // Silence first so the voice-audio tail in the resampler FIR filter
-    // decays before the EOO pilots arrive at the receiver.
     memset(eooOutShort_, 0, sizeof(short) * (numEOOSamples + NUM_SAMPLES_SILENCE));
     for (int index = 0; index < numEOOSamples; index++)
     {
-        eooOutShort_[NUM_SAMPLES_SILENCE + index] = eooOut_[index].real * RADE_SCALING_FACTOR;
+        eooOutShort_[index] = eooOut_[index].real * RADE_SCALING_FACTOR;
     }
 
     // Diagnostic: log RMS of s=2 and s=3 windows of the generated EOO frame
