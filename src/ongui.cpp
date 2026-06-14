@@ -1198,7 +1198,7 @@ void MainFrame::OnTOTTimer(wxTimerEvent&)
     else
     {
         m_btnTogPTT->SetValue(false);
-        m_btnTogPTT->SetBackgroundColour(wxNullColour);
+        m_btnTogPTT->SetBackgroundColour(wxColour(255, 165, 0));
         endingTx.store(true, std::memory_order_release);
         togglePTT();
     }
