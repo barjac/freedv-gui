@@ -28,10 +28,14 @@
 #include <mutex>
 
 #include <wx/tipwin.h>
+#include <wx/combo.h>
 #include <wx/dataview.h>
+
+class wxListBox;
 
 #include "../../main.h"
 #include "defines.h"
+#include "filter_frequency.h"
 #include "reporting/FreeDVReporter.h"
 #include "../controls/ReportMessageRenderer.h"
 
@@ -41,22 +45,7 @@
 class FreeDVReporterDialog : public wxFrame
 {
     public:
-        enum FilterFrequency
-        {
-            BAND_ALL,
-            BAND_160M,
-            BAND_80M,
-            BAND_60M,
-            BAND_40M,
-            BAND_30M,
-            BAND_20M,
-            BAND_17M,
-            BAND_15M,
-            BAND_12M,
-            BAND_10M,
-            BAND_VHF_UHF,
-            BAND_OTHER,
-        };
+        using FilterFrequency = ::FilterFrequency;
 
         enum ColumnFilterOperator
         {
@@ -81,8 +70,11 @@ class FreeDVReporterDialog : public wxFrame
         void refreshLayout();
         
         void setBandFilter(FilterFrequency freq);
-        
+
+        static FilterFrequency getFilterForFrequency_(uint64_t freq);
+
         bool isTextMessageFieldInFocus();
+        void ShowMsgItemContextMenu(int itemIdx);
     
         void Unselect(wxDataViewItem& dvi) { m_listSpots->Unselect(dvi); }
         
@@ -148,6 +140,10 @@ class FreeDVReporterDialog : public wxFrame
         void    OnStatusTextClearSelected(wxCommandEvent& event);
         void    OnStatusTextClearAll(wxCommandEvent& event);
         void    OnStatusTextChange(wxCommandEvent& event);
+        void    OnStatusMessageContextMenuEdit(wxCommandEvent& event);
+        void    OnStatusMessageContextMenuDelete(wxCommandEvent& event);
+        void    OnStatusMessageContextMenuAdd(wxCommandEvent& event);
+        wxListBox* getMsgPopup() const;
         void    OnSystemColorChanged(wxSysColourChangedEvent& event);
 
         void OnItemSelectionChanged(wxDataViewEvent& event);
@@ -175,6 +171,7 @@ class FreeDVReporterDialog : public wxFrame
         void OnHamCallLookup(wxCommandEvent& event);
         
         void OnLeftClickTooltip(wxMouseEvent& event);
+        void OnMouseWheelTooltip(wxMouseEvent& event);
         void OnSetFocus(wxFocusEvent& event);
                 
         // Main list box that shows spots
@@ -195,11 +192,16 @@ class FreeDVReporterDialog : public wxFrame
         wxRadioButton* m_trackExactFreq;
 
         // Status message
-        wxComboBox* m_statusMessage;
+        wxComboCtrl* m_statusMessage;
         wxButton* m_buttonSend;
         wxButton* m_buttonClear;
         wxMenu* setPopupMenu_;
+        wxMenuItem* setSaveMenuItem_;
+        wxMenuItem* saveMenuItem_;
         wxMenu* clearPopupMenu_;
+        wxMenu* msgItemPopupMenu_;
+        wxMenuItem* addMsgMenuItem_;
+        int contextMenuSelectedIndex_;
         
         // Step 4: test/save/cancel setup
         wxButton* m_buttonOK;
@@ -489,7 +491,6 @@ class FreeDVReporterDialog : public wxFrame
         void createColumn_(int col, bool visible);
         wxDataViewColumn* getColumnForModelColId_(unsigned int col);
 
-        FilterFrequency getFilterForFrequency_(uint64_t freq);
         wxColour msgRowBackgroundColor;
         wxColour msgRowForegroundColor;
         wxColour txRowBackgroundColor;

@@ -22,7 +22,7 @@
 #ifndef __EASY_SETUP_DIALOG__
 #define __EASY_SETUP_DIALOG__
 
-#include "main.h"
+#include "../../main.h"
 #include "defines.h"
 #include "audio/IAudioEngine.h"
 #include "rig_control/HamlibRigController.h"
@@ -83,6 +83,8 @@ class EasySetupDialog : public wxDialog
         wxStaticText *m_stIcomCIVHex;
         wxTextCtrl *m_tcIcomCIVHex;
         wxComboBox *m_cbPttMethod;
+        wxCheckBox *m_ckForceRTSOn;
+        wxCheckBox *m_ckForceDTROn;
 
         // Step 2b: Serial PTT
         wxStaticBox* m_serialBox;
@@ -134,9 +136,11 @@ class EasySetupDialog : public wxDialog
          std::shared_ptr<HamlibRigController> hamlibTestObject_;
          std::shared_ptr<SerialPortOutRigController> serialPortTestObject_;
          int sineWaveSampleNumber_;
+         int analogSineWaveSampleNumber_;
          bool hasAppliedChanges_;
 
          std::shared_ptr<IAudioDevice> txTestAudioDevice_;
+         std::shared_ptr<IAudioDevice> analogPlaybackTestAudioDevice_;
 };
 
 #endif // __EASY_SETUP_DIALOG__

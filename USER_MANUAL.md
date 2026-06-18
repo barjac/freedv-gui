@@ -60,7 +60,7 @@ the "Advanced" button and proceed to "Advanced Setup" below.
 Easy Setup supports three methods of radio control:
 
 1. No radio control (e.g. using a VOX audio device such as SignaLink),
-2. Hamlib CAT control, and
+2. Hamlib or OmniRig CAT control, and
 3. Serial port PTT control.
 
 Simply select the option that matches your radio setup and the required fields will
@@ -230,8 +230,11 @@ and for the basic operation of the FreeDV software.
 Sound card levels are generally adjusted in the computer's Control
 Panel or Settings, or in some cases via controls on your rig interface
 hardware or menus on your radio. In-app adjustments can also be done
-by using the 'TX Level' slider at the bottom of the main screen; anything
-below 0 dB attenuates the transmit signal.
+using the **TX Attenuation** control on the right-hand side of the main
+window. The `<<` and `>>` buttons adjust by 1.0 dB and the `<` and `>`
+buttons adjust by 0.2 dB; the mouse scroll wheel can also be used to 
+generate 0.2dB steps whilst hovering anywhere over the TX Attenuation
+control area. Values below 0 dB attenuate the transmit signal.
 
 When FreeDV is running, you can observe the sound card signals in the
 main window tabs (From Radio, From Mic, To Speaker).
@@ -243,10 +246,32 @@ shift keying (PSK) so is not sensitive to amplitude.
 1. The transmit level from your computer to your radio is important.
 On transmit, adjust your level so that the ALC is **just** being
 nudged.  More **is not better** with the FreeDV transmit signal.
-Overdriving your transmitter will lead to a distorted transit signal, and
+Overdriving your transmitter will lead to a distorted transmit signal, and
 a poor SNR at the receiver.  This is a very common problem.
 
-1. FreeDV 700D and 700E can drive your transmitter at an average power of 40% of its peak power rating.  For example 40W RMS for a 100W PEP radio. Make sure your transmitter can handle continuous power output at these levels, and reduce the power if necessary.
+   Right-clicking on the **TX Attenuation** control top row opens a context menu
+   with the following options for the currently active amateur band:
+
+   * **Enable auto-save of TX atten for [band]** — saves the current level for
+     that band and enables automatic saving whenever the band is left or the
+     program is closed. The menu item changes to **Disable auto-save of TX atten
+     for [band]** once enabled, which removes the saved value and stops auto-saving.
+   * **Restore TX atten level for [band]** — reverts the attenuation to the last
+     auto-saved value for that band, useful for recovering a known good level
+     after experimenting during a session.
+    
+   The **Control** panel (right-hand side) contains a **Tune** button which outputs a continuous 1500 Hz carrier for antenna matching, netting etc.
+   While Tune is active the TX Attenuation controls adjust the tune signal level rather than the normal transmit level.
+
+   Right-clicking the Tune button opens a context menu with the following options:
+   * **Set tune output to minimum (-30 dB)** — immediately sets the tune attenuation to its lowest output level without transmitting, useful for safe low-power antenna tuner testing.
+   * Per-band **Enable/Disable auto-save** and **Restore** options, similar to those described above for TX attenuation (shown only when a band is known).
+   
+   FreeDV will automatically detect band changes (via Hamlib or OmniRig CAT, or manual
+   frequency entry) and load any saved attenuation value for the new band.
+   When a band is left the current values for that band are saved immediately.
+   
+ 1. FreeDV 700D and 700E can drive your transmitter at an average power of 40% of its peak power rating.  For example 40W RMS for a 100W PEP radio. Make sure your transmitter can handle continuous power output at these levels, and reduce the power if necessary.
 
 1. Adjust the microphone audio so the peaks are not clipping, and the
 average is about half the maximum.
@@ -268,10 +293,7 @@ demodulator.
 
 ## USB or LSB?
 
-On bands below 10 MHz, LSB is used for FreeDV.  On 10MHz and above, USB is used. After much debate, the FreeDV community has adopted the same conventions as SSB, based on the reasoning that FreeDV is a voice mode.
-
-As an aid to the above, FreeDV will show the current mode on the bottom of the window upon pressing the Start button if Hamlib is enabled and your radio supports retrieving frequency and mode information over CAT. If your radio is using an unexpected mode (e.g. LSB on 20 meters), it will display that mode on the bottom of the window next to the Clear button in red letters. When a session is not active, Hamlib isn't enabled, or if your radio doesn't support retrieving frequency and mode over CAT, it will remain grayed out with "unk" displaying instead of the mode (for "unknown").
-
+FreeDV currently follows the same conventions for upper and lower sideband as are used for amateur SSB. As an aid to this, FreeDV will show the current mode on the bottom of the window upon pressing the Start button if Hamlib is enabled and your radio supports retrieving frequency and mode information over CAT. If your radio is using an unexpected mode (e.g. LSB on 20 meters), it will display that mode on the bottom of the window next to the Clear button in red letters. When a session is not active, Hamlib isn't enabled, or if your radio doesn't support retrieving frequency and mode over CAT, it will remain grayed out with "unk" displaying instead of the mode (for "unknown").
 ## Transceiver Filters
 
 For most FreeDV use, your radio's receive and transmit filters should be set to the widest possible (typically around 3 kHz). 
@@ -326,9 +348,14 @@ saved. By default, this is inside the current user's Documents folder.
 
 By default, FreeDV uses the following locations to store configuration:
 
-* Linux: ~/.freedv
+* Linux: $XDG_CONFIG_HOME/freedv/freedv.conf (see below)
 * macOS: ~/Library/Preferences/FreeDV\ Preferences
 * Windows: Registry (HKEY\_CURRENT\_USER\\SOFTWARE\\freedv)
+
+On Linux, XDG_CONFIG_HOME defaults to ~/.config if not explicitly overridden. Note that 
+if you are not running the AppImage, the behavior is different if your distro does not 
+include wxWidgets 3.3 or newer. In those cases, the default configuration file location
+is ~/.freedv, which is the same as in prior versions of FreeDV.
 
 If you'd like to store the configuration in another location (or store multiple configurations),
 FreeDV accepts the -f (or --config) command line arguments to provide an alternate location. An
@@ -338,6 +365,12 @@ to the following locations:
 * Linux: ~/
 * macOS: ~/Library/Preferences/
 * Windows: C:\\Users\\[username]\\AppData\\Roaming
+
+You can also save and restore different configuration files by using the Tools->Export Configuration
+and Use Configuration menu items. These menu options allow for switching of configurations without
+restarting FreeDV. Note that restoring a configuration file does not modify the default configuration.
+However, the last restored configuration file will be loaded the next time FreeDV starts, unless you
+choose Tools->Load Default Configuration or restore a different configuration file.
 
 ## Executing FreeDV With a Different Configuration (Windows)
 
@@ -391,6 +424,28 @@ in sync with the radio. For example, in the case of ALE, the radio's frequency c
 waiting for a contact, which is faster than FreeDV can pull the latest from the radio (every five seconds). This can 
 be disabled by enabling "Manual Frequency Reporting" in Tools->Options.*
 
+The FreeDV Reporter window includes a **Message:** field that allows you to broadcast a
+short status message (such as your location, antenna, or current activity) to other FreeDV
+Reporter users. Type a message and click **Send** to broadcast it, or **Clear** to remove
+the current message.
+
+*Note: messages are only broadcast when reporting is enabled in Tools->Options->Reporting
+and the **Reporting** toggle button in the main window is on.*
+
+Messages are not saved automatically. To save a message for later reuse, right-click the
+**Send** button to open a context menu with the following options:
+
+* **Send and save message** — broadcasts the message and adds it to the saved list
+* **Only save message** — adds the message to the saved list without sending it
+
+Saved messages are kept in a drop-down list of up to 15 entries, sorted alphabetically.
+Click the arrow on the **Message:** field to view and select from saved messages.
+Right-clicking on any entry in the list opens a context menu with options to:
+
+* **Add** a new message to the list
+* **Edit** the selected message
+* **Delete** the selected message from the list
+
 FreeDV will also show the callsigns of previously received signals. To view those, click on the arrow
 next to the last received callsign at the bottom of the window. These are in descending order by time
 of receipt (i.e. the most recently received callsign will appear at the top of the list).
@@ -415,6 +470,16 @@ from the FreeDV Reporter servers in the dialog box.
 The last selected logging source (either the FreeDV Reporter window or the drop-down callsign list at the bottom
 of the main window) is used for auto-filling of logging data. This is to avoid confusion (for instance, if a row 
 in the main window is selected but it's intended to log from FreeDV Reporter instead).
+
+# Time-Out Timer (TOT)
+
+FreeDV contains a built-in time-out timer (TOT) that prevents the radio from transmitting for longer than the configured
+period. By default, this is enabled and set to 180 seconds (3 minutes). Fifteen seconds prior to the timeout firing,
+a window will appear along with a beep in your configured speakers or headset to allow you to either reset the timer
+or finish up your transmission. 
+
+If you desire a different timeout or want to disable the TOT, you can do so by going to Tools->Options->Rig Control
+and changing the TOT related options in that tab.
 
 # FreeDV Modes
 
@@ -882,7 +947,47 @@ LDPC | Low Density Parity Check Codes - a family of powerful FEC codes
 
 # Release Notes
 
-## V2.3.0 TBD 2026
+## V2.4.0 TBD 2026
+
+1. Bugfixes:
+    * Hamlib: Allow two timeouts during connection process to allow Icom marine radios to behave better. (PR #1369, #1388)
+    * Rename sanitizers.h->freedv_sanitizers.h due to name conflicts. (PR #1372)
+    * Fix intermittent non-response to short PTT clicks to stop TX. (PR #1375) - thanks @barjac!
+    * Revert to libsamplerate library to fix remaining audio quality issues. (PR #1379)
+    * Right-justify SNR column in FreeDV Reporter to improve appearance. (PR #1387) - thanks @barjac!
+    * Hamlib: Set frequency again on mode changes. (PR #1395)
+2. Enhancements:
+    * Add UDP broadcast of received callsigns. (PR #1367)
+    * Add Time-Out Timer (TOT) capability to FreeDV. (PR #1366, #1398) - thanks @barjac!
+    * Load last-used config file on restarts. (PR #1365, #1371)
+    * Add "Set tune output to minimum" to Tune button context menu for safety. (PR #1378) - thanks @barjac!
+    * Move Tune button into Control widget for improved usability. (PR #1377) - thanks @barjac!
+    * Restore heard station list on launch. (PR #1358) - thanks @barjac!
+3. Build system:
+    * Clear CMake deprecation warnings in FreeDV. (PR #1383, #1386)
+4. Other:
+    * FlexRadio/KA9Q integrations moved to freedv-integrations repo. (PR #1368)
+
+## V2.3.1 May 2026
+
+1. Bugfixes:
+    * Fix TX/tune level context menus on Linux distros using wxWidgets <= 3.2. (PR #1333) - thanks @barjac!
+    * Fix audio routing problems on Windows due to hardware offloading. (PR #1335)
+    * Hamlib: Detect empty rig name on start. (PR #1339, #1351) - thanks @barjac!
+    * Fix missing Hamlib defines when building from source (PR #1353) - thanks @barjac!
+    * FreeDV Reporter: Fix issue preventing mode changes on double-click. (PR #1343)
+    * Fix compiler warning/error in EventHandler when using GCC 16.1. (PR #1347)
+    * Improve Flex waveform RX audio quality. (PR #1338, #1348, 1356)
+    * Flex: Use version number without Git hash for waveform registration. (PR #1359)
+    * Fix intermittent CSV logging corruption. (PR #1361)
+    * Hamlib: Fix bug preventing frequency change after changing on the radio. (PR #1363)
+    * KA9Q: Remove custom AppRun script causing audio distortion. (PR #1364)
+2. Enhancements:
+    * Allow use of a custom key for PTT. (PR #1309)
+    * Improve Reporter message list usability. (PR #1310) - thanks @barjac!
+    * Clarify Reporter on/off tooltip. (PR #1345)
+
+## V2.3.0 May 2026
 
 1. Bugfixes:
     * Linux: fix semaphore wakeup timing to reduce audio dropouts. (PR #1220)
@@ -899,116 +1004,46 @@ LDPC | Low Density Parity Check Codes - a family of powerful FEC codes
     * Fix bugs related to display of Mic/Speaker Level slider. (PR #1281) - thanks @barjac!
     * Fix bug causing main window's menu to disappear when Reporter is displayed. (PR #1282)
     * Flex: Prevent multiple slices from being in FreeDV mode. (PR #1270)
+    * Further improve audio dropouts. (PR #1287)
+    * FreeDV Reporter: Fix inability to use mouse wheel on Msg column. (PR #1289)
+    * Fix RADE related compiler errors. (PR #1299)
+    * Logging: fix incorrect time when using UTC due to DST. (PR #1302) - thanks @barjac!
+    * Ensure that PTT is actually off when opening Hamlib connection. (PR #1308)
+    * Fix race condition preventing frequency/mode from changing on start with SmartSDR 4.2. (PR #1314, #1320, #1321, #1322)
+    * Fix inability to open web browser in AppImages (e.g. when viewing callsign info). (PR #1326)
 2. Enhancements:
     * FreeDV Reporter: Use ItemsAdded/ItemsDeleted instead of Cleared() for performance. (PR #1212)
     * Optimize "From XXX" plot performance. (PR #1238, #1239)
     * Logging: Send WSJT-X 'Decode' message to indicate RX'd SNR. (PR #1248)
     * Remove Python from RADE implementation to improve performance. (PR #1251)
     * Add ability to hide self from FreeDV Reporter list. (PR #1260, #1278)
-    * Add Tune button to allow tuning antennas/rigs. (PR #1259, #1265)
+    * Add Tune button to allow tuning antennas/rigs. (PR #1259, #1265, #1317, #1322)
     * Add SNR plot to main window. (PR #1250, #1261)
     * Bring back RX frequency indicator for RADE. (PR #1265, #1283)
     * Improve usability of attenuation control in the main window. (PR #1268) - thanks @barjac!
-    * Use RNNoise for improved noise canceling during TX. (PR #1276)
+    * Use RNNoise for improved noise canceling during TX. (PR #1276, #1307)
     * FreeDV Reporter: Add ability to filter based on individual columns. (PR #1285)
     * Improve spectrum and waterfall plot appearance on small displays. (PR #1288) - thanks @barjac!
+    * Add optional per-band TX attenuation saving. (PR #1284, #1323) - thanks @barjac!
+    * Log heard callsigns to a CSV file. (PR #1290, #1293)
+    * Add ability to load and save different FreeDV configurations. (PR #1296)
+    * Hamlib: Add options to force RTS and DTR on. (PR #1292)
+    * Add recogniition of SmartSDR 4.2+ DAX devices to Easy Setup. (PR #1306)
+    * Easy Setup: Also emit audio tone through speakers. (PR #1033)
+    * Switch to r8brain for audio resampling. (PR #1307)
 3. Build system:
     * Update Python to 3.14.3. (PR #1221)
-    * Update Hamlib to 4.7.0. (PR #1226)
+    * Update Hamlib to 4.7.1. (PR #1226, #1314)
     * Update wxWidgets to 3.3.2. (PR #1244)
     * Flex: Update Docker container version to match AppImage version. (PR #1256)
+    * Reenable Windows on ARM builds previously disabled in 2.0.0. (PR #1297, #1300)
+    * Add automated code signing support for Windows builds. (PR #1312)
 4. Documentation:
     * Update README instructions to reflect current Windows build steps. (PR #1232)
     * Add OmniRig troubleshooting to the user manual. (PR #1264)
-
-## V2.2.1 February 2026
-
-1. Bugfixes:
-    * Fix UBSan/TSan errors from 2.2.0 build. (PR #1200, #1208)
-    * Fix compile error when trying to use Hamlib 5.0-git. (PR #1202)
-    * Fix bug causing PTT input to be initially ignored until pushing the PTT button. (PR #1203)
-    * FlexRadio: Fix command format for UDP port. (PR #1205; thanks @amcdermond!)
-    * Cache PTT response time to minimize first TX reporting issues. (PR #1207)
-    * Hamlib: Add checking prior to retrieving minimum/maximum baud rates. (PR #1209)
-    * Autosize columns in main window drop-down list. (PR #1213)
-    * PulseAudio/pipewire: Use fixed wait time between processing cycles. (PR #1216)
-    * Slow down waterfall display when waterfall is small (i.e. displayed with other plots). (PR #1216)
-    * FlexRadio: Terminate on SIGHUP to avoid hangs on exit. (PR #1214)
-2. Build system:
-    * macOS: Fix dylibbundler call for compilation. (PR #1204)
-    * macOS: Add /Applications shortcut to generated DMG. (PR #1206)
-
-## V2.2.0 January 2026
-
-1. Bugfixes:
-    * Radio integrations:
-        * KA9Q: Need to divide read() rval with sizeof(short). (PR #1120)
-        * Flex/KA9Q: Only report to FreeDV Reporter if user is not hidden from former. (PR #1140)
-        * Flex: use poll() instead of select(). (PR #1143)
-        * Flex: use tanh() for audio limiting. (PR #1156)
-        * Flex/KA9Q: Fix problem preventing running of AppImages on Raspberry Pi OS/Debian bookworm. (PR #1158)
-        * Flex: set SO_REUSEADDR to allow NodeRed, etc. to work with the waveform. (PR #1161)
-        * Flex/KA9Q: Make sure each argument to AppImage is quote-escaped. (PR #1168)
-    * FreeDV Reporter:
-        * Left-align cardinal directions. (PR #1139)
-        * Defer row adds and removes until timer fires to reduce flicker. (PR #1162)
-    * Update VC Redistributable and suppress reboots during its installation. (PR #1102)
-    * Reduce RADE RX losses due to resampling. (PR #1094)
-    * Use same sample rate for both recording RX and TX. (PR #1107)
-    * Fix intermittent crash on FreeDV Reporter connection loss. (PR #1112, #1115, #1178)
-    * Suppress background for fake rightmost column. (PR #1116)
-    * Emit VOX tone only when PTT is enabled. (PR #1122)
-    * OmniRig: Fix crash when using Test button in CAT config dialog. (PR #1126)
-    * Fix hidden/clipped axis labels on plots. (PR #1110)
-    * Work around deadlock bug in tty0tty. (PR #1134) - thanks @barjac!
-    * Zero out waterfall when transmitting and not in full duplex. (PR #1136)
-    * Avoid data race when terminating application. (PR #1140)
-    * Fix issue saving frequency list on non-English systems. (PR #1152)
-    * Suspend PTT input changes while transitioning TX<->RX. (PR #1151)
-    * Fix memory corruption when stopping and starting different playback files. (PR #1157)
-    * Update unit test infrastructure to fix initial (within ~2-3s) RADE desyncs. (PR #1167)
-    * Windows: disable microphone check on start. (PR #1191)
-    * UdpHandler: fix crash when unable to resolve DNS. (PR #1193)
-    * Prevent reset of FreeDV Reporter connection while running. (PR #1193)
-    * Disable UDP Reporting checkbox when running. (PR #1193)
-    * Fix waterfall rendering issue with multiple plots displayed at once. (PR #1193)
-    * Fix inconsistent behavior when selecting/deselecting rows from the main window drop-down list. (PR #1184)
-    * OmniRig: Don't suppresss frequency updates on initial connect. (PR #1184)
-    * Hamlib: increase timeout to 625ms. (PR #1195)
-2. Enhancements:
-    * FlexRadio support:
-        * Report FreeDV SNR using SmartSDR Meter API. (PR #1119)
-        * Use random port for VITA socket after connect. (PR #1141)
-        * Allow Ctrl-C to clean up the waveform. (PR #1144, #1146, #1160) - thanks @arodland!
-        * Allow FreeDV Reporter parameters to be overridden via command line. (PR #1154)
-        * Add command line option to adjust RX volume. (PR #1159)
-        * Allow user-configurable spot timeout (default 10 minutes). (PR #1169)
-        * Report SNR in spots added to SmartSDR. (PR #1179)
-    * KA9Q/SDR support:
-        * Allow user message to be reported to FreeDV Reporter. (PR #1179)
-    * FreeDV Reporter:
-        * Allow columns to be rearranged and/or made invisible. (PR #1132)
-        * Sort empty user messages below non-empty ones. (PR #1105)
-        * Add idle filter. (PR #1142, #1180, #1183, #1189)
-        * Add right-click menu for callsign lookups. (PR #1171, #1185)
-        * Add filtered indicator to bottom of window. (PR #1166)
-    * Upgrade Python to 3.14.2. (PR #1109, #1118, #1124, #1174)
-    * Add support for BBWENet bandwidth expander for received RADE audio. (PR #1113)
-    * Reduce CPU usage rendering "scalar" plots (i.e. From Mic). (PR #1133)
-    * Linux: List /dev/rfcomm* serial devices when configuring. (PR #1106) - thanks @NespaLa!
-    * Hamlib: Allow selection of baud rates greater than 115200. (PR #1125)
-    * Add support for loggers that support the WSJT-X networking protocol. (PR #1129, #1153, #1184, #1196)
-    * Add support for recording decoded audio. (PR #1145, #1184)
-    * Display Hamlib version in Help->About. (PR #1169)
-3. Build system:
-    * Use Clang to build AppImages for better performance. (PR #1149)
-    * Enable link-time optimization for AppImages, DMGs and Windows builds. (PR #1163)
-    * Enable profile-guided optimation for AppImages. (PR #1173)
-4. Other:
-    * Remove 5.3665 MHz as a default frequency. (PR #1187)
-
-*Note: Legacy modes (700D, 700E, 1600) are now hidden by default. (PR #1108) You can show them
-again by going to Tools->Options->Modem and selecting "Enable Legacy Modes".*
+    * Update FlexRadio waveform README to reflect SmartSDR 4.2 release. (PR #1311)
+5. Other:
+    * Audio resampling logic consolidated in one location for ease of maintenance. (PR #1286, #1307)
 
 ## Earlier than V2.2.0
 

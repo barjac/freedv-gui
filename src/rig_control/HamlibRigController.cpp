@@ -68,7 +68,7 @@ bool HamlibRigController::RigCompare_(const struct rig_caps *rig1, const struct 
     return rig1->rig_model < rig2->rig_model;
 }
 
-HamlibRigController::HamlibRigController(std::string rigName, std::string serialPort, const int serialRate, const int civHex, const PttType pttType, std::string pttSerialPort, bool restoreFreqModeOnDisconnect, bool freqOnly)
+HamlibRigController::HamlibRigController(std::string rigName, std::string serialPort, const int serialRate, const int civHex, const PttType pttType, std::string pttSerialPort, bool restoreFreqModeOnDisconnect, bool freqOnly, bool forceRtsOn, bool forceDtrOn)
     : ThreadedObject("hamlib")
     , rigName_(std::move(rigName))
     , serialPort_(std::move(serialPort))
@@ -76,11 +76,14 @@ HamlibRigController::HamlibRigController(std::string rigName, std::string serial
     , civHex_(civHex)
     , pttType_(pttType)
     , pttSerialPort_(std::move(pttSerialPort))
+    , forceRtsOn_(forceRtsOn)
+    , forceDtrOn_(forceDtrOn)
     , rig_(nullptr)
     , multipleVfos_(false)
     , pttSet_(false)
     , currFreq_(0)
     , currMode_(RIG_MODE_NONE)
+    , pendingMode_(UNKNOWN)
     , restoreOnDisconnect_(restoreFreqModeOnDisconnect)
     , origFreq_(0)
     , origMode_(RIG_MODE_NONE)
@@ -88,12 +91,13 @@ HamlibRigController::HamlibRigController(std::string rigName, std::string serial
     , destroying_(false)
     , rigResponseTime_(0)
     , errorEncountered_(false)
+    , getFreqModeErrorCount_(0)
 {
     // Perform initial load of rig list if this is our first time being created.
     InitializeHamlibLibrary();
 }
 
-HamlibRigController::HamlibRigController(int rigIndex, std::string serialPort, const int serialRate, const int civHex, const PttType pttType, std::string pttSerialPort, bool restoreFreqModeOnDisconnect, bool freqOnly)
+HamlibRigController::HamlibRigController(int rigIndex, std::string serialPort, const int serialRate, const int civHex, const PttType pttType, std::string pttSerialPort, bool restoreFreqModeOnDisconnect, bool freqOnly, bool forceRtsOn, bool forceDtrOn)
     : ThreadedObject("hamlib")
     , rigName_(RigIndexToName(rigIndex))
     , serialPort_(std::move(serialPort))
@@ -101,6 +105,8 @@ HamlibRigController::HamlibRigController(int rigIndex, std::string serialPort, c
     , civHex_(civHex)
     , pttType_(pttType)
     , pttSerialPort_(std::move(pttSerialPort))
+    , forceRtsOn_(forceRtsOn)
+    , forceDtrOn_(forceDtrOn)
     , rig_(nullptr)
     , multipleVfos_(false)
     , pttSet_(false)
@@ -113,6 +119,7 @@ HamlibRigController::HamlibRigController(int rigIndex, std::string serialPort, c
     , destroying_(false)
     , rigResponseTime_(0)
     , errorEncountered_(false)
+    , getFreqModeErrorCount_(0)
 {
     // Perform initial load of rig list if this is our first time being created.
     InitializeHamlibLibrary();
@@ -276,6 +283,10 @@ int HamlibRigController::RigNameToIndex(std::string const& rigName)
 std::string HamlibRigController::RigIndexToName(unsigned int rigIndex)
 {
     InitializeHamlibLibrary();
+    if (rigIndex >= RigNameList_.size())
+    {
+        return "";
+    }
     return RigNameList_[rigIndex];
 }
 
@@ -320,6 +331,7 @@ void HamlibRigController::connectImpl_()
     origFreq_ = 0;
     origMode_ = RIG_MODE_NONE;
     errorEncountered_ = false;
+    getFreqModeErrorCount_ = 0;
 
     auto tmpRig = rig_init(RigList_[rigIndex]->rig_model);
     if (!tmpRig) 
@@ -397,6 +409,18 @@ void HamlibRigController::connectImpl_()
     {
         rig_set_conf(tmpRig, rig_token_lookup(tmpRig, "ptt_share"), "1");
     }
+
+    // Force RTS/DTR on if requested (e.g. to power a radio interface via the serial port lines).
+    if (forceRtsOn_)
+    {
+        log_debug("hamlib: forcing RTS on");
+        rig_set_conf(tmpRig, rig_token_lookup(tmpRig, "rts_state"), "ON");
+    }
+    if (forceDtrOn_)
+    {
+        log_debug("hamlib: forcing DTR on");
+        rig_set_conf(tmpRig, rig_token_lookup(tmpRig, "dtr_state"), "ON");
+    }
     
     // Icom workaround from WSJT-X. Not sure it's needed here as
     // FreeDV doesn't do split.
@@ -421,8 +445,13 @@ void HamlibRigController::connectImpl_()
         log_info("Setting rig timeout to %s ms", MAX_TIMEOUT);
         rig_set_conf(tmpRig, rig_token_lookup(tmpRig, HAMLIB_TIMEOUT_TOKEN_NAME), MAX_TIMEOUT);
     }
-    rig_set_conf(tmpRig, rig_token_lookup(tmpRig, "retry"), "0");
-    rig_set_conf(tmpRig, rig_token_lookup(tmpRig, "timeout_retry"), "0");
+
+    // Initially allow two retries if we time out while sending commands. This is needed
+    // to better support Icom marine radios due to their ability to power themselves on
+    // when rig_open is called (they're unable to immediately respond to commands while
+    // powering up and thus results in spurious Hamlib errors being displayed to users).
+    rig_set_conf(tmpRig, rig_token_lookup(tmpRig, "retry"), "2");
+    rig_set_conf(tmpRig, rig_token_lookup(tmpRig, "timeout_retry"), "2");
             
     result = rig_open(tmpRig);
     if (result == RIG_OK) 
@@ -438,9 +467,38 @@ void HamlibRigController::connectImpl_()
             multipleVfos_ = true;
         }
 
+        // Make sure PTT is not enabled as there have been reports of some 
+        // radios starting off in this state.
+        result = rig_set_ptt(tmpRig, RIG_VFO_CURR, RIG_PTT_OFF);
+        if (result != RIG_OK)
+        {
+            log_warn("Could not ensure that radio starts with PTT off: %s", rigerror(result));
+        }
+        
         // Get current frequency and mode when we first connect so we can 
         // revert on close.
         requestCurrentFrequencyModeImpl_();
+        
+        // If a freq/mode was set prior to connect, push those changes now.
+        if (currFreq_ > 0)
+        {
+            auto tmpFreq = currFreq_;
+            currFreq_ = 0; // to make setFrequencyImpl_ actually run
+            setFrequencyImpl_(tmpFreq);
+        }
+        
+        if (currMode_ != RIG_MODE_NONE)
+        {
+            currMode_ = RIG_MODE_NONE; // to make setModeImpl_ actually run
+            setModeImpl_(pendingMode_);
+        }
+
+        // Disable timeouts. Now that we're able to connect and send the initial
+        // commands required by FreeDV, if we somehow have an issue sending commands 
+        // later we want to let the user know ASAP.
+        rig_set_conf(tmpRig, rig_token_lookup(tmpRig, "retry"), "0");
+        rig_set_conf(tmpRig, rig_token_lookup(tmpRig, "timeout_retry"), "0");
+    
         return;
     }
     else
@@ -476,6 +534,7 @@ void HamlibRigController::disconnectImpl_()
             {
                 setModeHelper_(currVfo, origMode_);
             }
+
         }
         
         origFreq_ = 0;
@@ -554,6 +613,7 @@ void HamlibRigController::setFrequencyImpl_(uint64_t frequencyHz)
 
     if (currFreq_ == frequencyHz)
     {
+        log_warn("Attempting to set to same frequency (%" PRIu64 " Hz), ignoring", frequencyHz);
         return;
     }
     
@@ -636,6 +696,8 @@ void HamlibRigController::setModeImpl_(IRigFrequencyController::Mode mode)
     auto tmpRig = rig_.load(std::memory_order_acquire);
     if (tmpRig == nullptr || currMode_ == hamlibMode)
     {
+        currMode_ = hamlibMode;
+        pendingMode_ = mode;
         return;
     }
 
@@ -705,7 +767,8 @@ modeAttempt:
     if (result != RIG_OK && currVfo == RIG_VFO_CURR)
     {
         log_debug("rig_get_mode: error = %s ", rigerror(result));
-        if (!errorEncountered_)
+        getFreqModeErrorCount_++;
+        if (!errorEncountered_ && getFreqModeErrorCount_ > MAX_GET_FREQUENCY_ERR_COUNT)
         {
             std::string errMsg = std::string("Could not retrieve current radio mode: ") + HAMLIB_FRIENDLY_ERROR_FN(result);
             onRigError(this, errMsg);
@@ -729,7 +792,9 @@ freqAttempt:
         {
             log_debug("rig_get_freq: error = %s ", rigerror(result));
             
-            if (!errorEncountered_)
+            getFreqModeErrorCount_++;
+
+            if (!errorEncountered_ && getFreqModeErrorCount_ > MAX_GET_FREQUENCY_ERR_COUNT)
             {
                 std::string errMsg = std::string("Could not get current frequency: ") + HAMLIB_FRIENDLY_ERROR_FN(result);
                 onRigError(this, errMsg);
@@ -783,7 +848,19 @@ freqAttempt:
                 origFreq_ = freq;
                 origMode_ = mode;
             }
+            else
+            {
+                // currFreq_ should only be set after initial retrieval of frequency/mode
+                // as the user could specify a frequency to change to on startup. Otherwise,
+                // that would be overwritten and the frequency change would not happen.
+                currFreq_ = freq;
+                currMode_ = mode;
+            }
             
+            // Reset get freq/mode error count since we don't want intermittent errors
+            // to cause a popup.
+            getFreqModeErrorCount_ = 0;
+
             onFreqModeChange(this, freq, currMode);
         }
     }
@@ -820,6 +897,7 @@ void HamlibRigController::setFrequencyHelper_(vfo_t currVfo, uint64_t frequencyH
     auto tmpRig = rig_.load(std::memory_order_acquire);
     if (tmpRig == nullptr)
     {
+        currFreq_ = frequencyHz;
         return;
     }
 
@@ -863,7 +941,7 @@ freqAttempt:
         currFreq_ = frequencyHz;
         if (!destroying_)
         {
-            requestCurrentFrequencyMode();
+            requestCurrentFrequencyModeImpl_();
         }
     }
 }
@@ -875,6 +953,7 @@ void HamlibRigController::setModeHelper_(vfo_t currVfo, rmode_t mode)
     auto tmpRig = rig_.load(std::memory_order_acquire);
     if (tmpRig == nullptr)
     {
+        currMode_ = mode;
         return;
     }
     
@@ -916,9 +995,23 @@ modeAttempt:
     if (setOkay)
     {
         currMode_ = mode;
+
+        // We request the frequency to be set again to work around an issue with the 
+        // FTDX10 where mode changes between LSB and USB cause the VFO frequency to shift
+        // by 700 Hz. This ensures that the frequency we're currently set to is in sync
+        // with the VFO frequency.
+        if (currFreq_ > 0)
+        {
+            result = rig_set_freq(tmpRig, currVfo, currFreq_);
+            if (result != RIG_OK)
+            {
+                log_debug("rig_set_freq: error = %s ", rigerror(result));
+            }
+        }
+
         if (!destroying_)
         {
-            requestCurrentFrequencyMode();
+            requestCurrentFrequencyModeImpl_();
         }
     }
 }

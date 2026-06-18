@@ -48,8 +48,6 @@
 #include <wx/socket.h>
 #include <wx/numformatter.h>
 
-#include <samplerate.h>
-
 #include <stdint.h>
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86)
 #include <cpuid.h>
@@ -72,6 +70,8 @@
 #include "modem_stats.h"
 
 #include "topFrame.h"
+#include "gui/dialogs/filter_frequency.h"
+#include "gui/dialogs/tot_warning.h"
 #include "gui/controls/plot.h"
 #include "gui/controls/plot_scalar.h"
 #include "gui/controls/plot_scatter.h"
@@ -92,13 +92,18 @@
 #include "logging/ILogger.h"
 #include "pipeline/paCallbackData.h"
 #include "pipeline/LinkStep.h"
-#include "util/sanitizers.h"
+#include "freedv_sanitizers.h"
+#include "gui/util/wxMessageBoxWrapper.h"
 
 #define _USE_TIMER              1
 #define _USE_ONIDLE             1
 #define _DUMMY_DATA             1
 //#define _AUDIO_PASSTHROUGH    1
 #define _REFRESH_TIMER_PERIOD   (DT*1000)
+
+#if defined(UNOFFICIAL_RELEASE)
+#define EXPIRES_AFTER_TIMEFRAME (wxDateSpan(0, 6, 0)) /* 6 months */
+#endif // defined(UNOFFICIAL_RELEASE)
 
 //#define _USE_ABOUT_DIALOG       1
 
@@ -113,12 +118,23 @@ enum {
         ID_TIMER_UPDATE_OTHER,
         ID_TIMER_PSKREPORTER,
         ID_TIMER_UPD_FREQ,
+        ID_TIMER_TOT,           // Time-Out Timer
+        ID_TIMER_TOT_WARNING,   // Polls remaining TOT time to show warning
      };
 
 #define EXCHANGE_DATA_IN    0
 #define EXCHANGE_DATA_OUT   1
 
 extern int                 g_nSoundCards;
+
+// Last-used configuration file helpers.
+// The path is stored in a platform-appropriate state store
+// (registry on Windows, file on macOS/Linux) that is independent
+// of the main application config so it can always be read and written
+// regardless of which config backend is currently active.
+wxString  getLastUsedConfigPath();
+void      saveLastUsedConfigPath(const wxString& path);
+void      clearLastUsedConfigPath();
 
 // Voice Keyer Constants
 
@@ -183,9 +199,10 @@ class MainApp : public wxApp
 
         FreeDVConfiguration appConfiguration;
         wxString customConfigFileName;
+        wxString defaultConfigFilePath;
         
         // PTT -----------------------------------    
-        unsigned int        m_intHamlibRig;
+        int        m_intHamlibRig;
         std::shared_ptr<IRigFrequencyController> rigFrequencyController;
         std::shared_ptr<IRigPttController> rigPttController;
 
@@ -292,6 +309,7 @@ class MainFrame : public TopFrame
         PlotScalar*             m_panelSNR;
 
         bool                    m_RxRunning;
+        bool                    txChangeoverOccurring_;
         
         bool                    OpenHamlibRig();
 #if defined(WIN32)
@@ -305,11 +323,11 @@ class MainFrame : public TopFrame
 
 #ifdef _USE_TIMER
         wxTimer                 m_plotTimer;
-        
+
         // Not sure why we have the option to disable timers. TBD?
         wxTimer                 m_pskReporterTimer;
         wxTimer                 m_updFreqStatusTimer; //[UP]
-        
+
         wxTimer                 m_plotWaterfallTimer;
         wxTimer                 m_plotSpectrumTimer;
         wxTimer                 m_plotScatterTimer;
@@ -317,7 +335,19 @@ class MainFrame : public TopFrame
         wxTimer                 m_plotSpeechOutTimer;
         wxTimer                 m_plotDemodInTimer;
         wxTimer                 m_plotSNRTimer;
+
+        // Time-Out Timer (TOT): stops TX after configured period
+        wxTimer                 m_totTimer;
+        wxTimer                 m_totWarningTimer;
 #endif
+
+        // TOT warning state
+        std::chrono::time_point<std::chrono::high_resolution_clock> m_totTxStartTime;
+        int                     m_totCurrentDurationMs{0};
+        TotWarningDialog*       m_totWarningDialog_{nullptr};
+
+        // TOT beep state
+        std::chrono::time_point<std::chrono::high_resolution_clock> m_totLastBeepTime_;
 
     void destroy_fifos(void);
 
@@ -371,7 +401,13 @@ class MainFrame : public TopFrame
         void OnToolsOptionsUI(wxUpdateUIEvent& event) override;
 
         void OnPlayFileFromRadio( wxCommandEvent& event ) override;
-        
+        void OnToolsExportConfig( wxCommandEvent& event ) override;
+        void OnToolsExportConfigUI( wxUpdateUIEvent& event ) override;
+        void OnToolsImportConfig( wxCommandEvent& event ) override;
+        void OnToolsImportConfigUI( wxUpdateUIEvent& event ) override;
+        void OnToolsLoadDefaultConfig( wxCommandEvent& event ) override;
+        void OnToolsLoadDefaultConfigUI( wxUpdateUIEvent& event ) override;
+
         void OnCenterRx(wxCommandEvent& event) override;
 
         void OnHelpCheckUpdates( wxCommandEvent& event ) override;
@@ -387,6 +423,10 @@ class MainFrame : public TopFrame
         void OnTogBtnAnalogClick(wxCommandEvent& event) override;
         void OnTogBtnPTT( wxCommandEvent& event ) override;
         void OnTogBtnPTTRightClick( wxContextMenuEvent& event ) override;
+        // NOTE: sets TX colour on press to avoid a GTK blue-flash during the TX delay.
+        // Upstream may prefer a different approach (e.g. true press-to-start TX).
+        void OnTogBtnPTTMouseDown( wxMouseEvent& event );
+        void OnTogBtnPTTMouseLeave( wxMouseEvent& event );
         void OnTogBtnVoiceKeyerClick (wxCommandEvent& event) override;
         void OnTogBtnVoiceKeyerRightClick( wxContextMenuEvent& event ) override;
         
@@ -424,6 +464,11 @@ class MainFrame : public TopFrame
         void OnTxLevelIncr( wxCommandEvent& event ) override;
         void OnTxLevelIncrBig( wxCommandEvent& event ) override;
         void OnTxLevelMouseWheel( wxMouseEvent& event ) override;
+        void OnTxLevelContextMenu( wxContextMenuEvent& event ) override;
+        void OnTuneAttenContextMenu( wxContextMenuEvent& event ) override;
+        void loadTxAttenForBand_(FilterFrequency band);
+        void loadTuneAttenForBand_(FilterFrequency band);
+        void autoSaveCurrentBandLevels_(bool writeConfig = true);
         
         void OnChangeMicSpkrLevel( wxScrollEvent& event ) override;
         
@@ -439,6 +484,11 @@ class MainFrame : public TopFrame
         
         void OnChooseAlternateVoiceKeyerFile( wxCommandEvent& event );
         void OnRecordNewVoiceKeyerFile( wxCommandEvent& event );
+
+        void OnTOTTimer(wxTimerEvent& evt);
+        void OnTOTWarningTimer(wxTimerEvent& evt);
+        void playTotBeep_();
+        void stopTotBeep_();
         
         void OnSetMonitorVKAudio( wxCommandEvent& event );
         void OnSetMonitorTxAudio( wxCommandEvent& event );
@@ -527,6 +577,15 @@ class MainFrame : public TopFrame
         float      vk_rx_sync_time;
         bool suppressFreqModeUpdates_;
         bool firstFreqUpdateOnConnect_;
+        FilterFrequency lastBand_;
+        // Restore-point: the TX/tune level that was active when we entered the
+        // current band (or when Enable was first clicked for that band). Restore
+        // reverts to this rather than re-reading the map, which may already have
+        // been overwritten by auto-save on a prior band departure.
+        // Initialised to -20 dB (units are tenths of dB) as a safe default in
+        // case Restore is invoked before any band load or Enable has occurred.
+        int txLoadedLevel_{-200};
+        int tuneLoadedLevel_{-200};
         
         std::string vkFileName_;
         
@@ -545,7 +604,10 @@ class MainFrame : public TopFrame
         bool        validateSoundCardSetup();
         
         void loadConfiguration_();
+        void restoreCallsignListFromCsv_();
         void resetStats_();
+        void exportConfiguration_(wxConfigBase* config);
+        void setConfiguration_(wxConfigBase* config);
 
         HamlibRigController::Mode getCurrentMode_();
         
@@ -609,14 +671,6 @@ class MainFrame : public TopFrame
 
 void resample_for_plot(GenericFIFO<short> *plotFifo, short buf[], short* dec_samples, int length, int fs) FREEDV_NONBLOCKING;
 
-int resample(SRC_STATE *src,
-             short      output_short[],
-             short      input_short[],
-             int        output_sample_rate,
-             int        input_sample_rate,
-             int        length_output_short, // maximum output array length in samples
-             int        length_input_short
-             );
 void txRxProcessing();
 
 // FreeDv API calls this when there is a test frame that needs a-plottin'

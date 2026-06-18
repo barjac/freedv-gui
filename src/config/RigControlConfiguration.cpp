@@ -32,6 +32,8 @@ RigControlConfiguration::RigControlConfiguration()
     , hamlibSerialRate("/Hamlib/SerialRate", 0)
     , hamlibSerialPort("/Hamlib/SerialPort", "")
     , hamlibPttSerialPort("/Hamlib/PttSerialPort", "")
+    , hamlibForceRTSOn("/Hamlib/ForceRTSOn", false)
+    , hamlibForceDTROn("/Hamlib/ForceDTROn", false)
         
     , useSerialPTT("/Rig/UseSerialPTT", false)
     , serialPTTPort("/Rig/Port", "")
@@ -51,6 +53,8 @@ RigControlConfiguration::RigControlConfiguration()
         
     , leftChannelVoxTone("/Rig/leftChannelVoxTone",  false)
     , rigResponseTimeMicroseconds("/Rig/rigResponseTimeMicroseconds", 0)
+    , totTimerEnabled("/Rig/TotTimerEnabled", true)
+    , totTimerSecs("/Rig/TotTimerSecs", 180)
 {
     // empty
 }
@@ -73,7 +77,9 @@ void RigControlConfiguration::load(wxConfigBase* config)
     auto tmp = hamlibSerialPort.getWithoutProcessing();
     hamlibPttSerialPort.setDefaultVal(tmp);
     load_(config, hamlibPttSerialPort);
-    
+    load_(config, hamlibForceRTSOn);
+    load_(config, hamlibForceDTROn);
+
     load_(config, useSerialPTT);
     load_(config, serialPTTPort);
     load_(config, serialPTTUseRTS);
@@ -93,6 +99,8 @@ void RigControlConfiguration::load(wxConfigBase* config)
     load_(config, leftChannelVoxTone);
 
     load_(config, rigResponseTimeMicroseconds);
+    load_(config, totTimerEnabled);
+    load_(config, totTimerSecs);
 }
 
 void RigControlConfiguration::save(wxConfigBase* config)
@@ -107,7 +115,9 @@ void RigControlConfiguration::save(wxConfigBase* config)
     save_(config, hamlibSerialRate);
     save_(config, hamlibSerialPort);
     save_(config, hamlibPttSerialPort);
-    
+    save_(config, hamlibForceRTSOn);
+    save_(config, hamlibForceDTROn);
+
     save_(config, useSerialPTT);
     save_(config, serialPTTPort);
     save_(config, serialPTTUseRTS);
@@ -127,4 +137,6 @@ void RigControlConfiguration::save(wxConfigBase* config)
     save_(config, leftChannelVoxTone);
 
     save_(config, rigResponseTimeMicroseconds);
+    save_(config, totTimerEnabled);
+    save_(config, totTimerSecs);
 }

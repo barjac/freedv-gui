@@ -22,6 +22,7 @@
 
 #include <inttypes.h>
 #include <time.h>
+#include <fstream>
 #include <sstream>
 #include <iomanip>
 #include <vector>
@@ -46,6 +47,8 @@
 #include "pipeline/TxRxThread.h"
 #include "reporting/pskreporter.h"
 #include "reporting/FreeDVReporter.h"
+#include "reporting/CsvReporter.h"
+#include "reporting/UdpReporter.h"
 
 #include "logging/WSJTXNetworkLogger.h"
 
@@ -73,7 +76,6 @@ extern "C" {
     extern void golay23_init(void);
 }
 
-#define EXPIRES_AFTER_TIMEFRAME (wxDateSpan(0, 6, 0)) /* 6 months */
 
 //-------------------------------------------------------------------
 // Bunch of globals used for communication with sound card call
@@ -123,8 +125,6 @@ std::atomic<bool>  g_half_duplex;
 std::atomic<bool>  g_voice_keyer_tx;
 std::atomic<bool>  g_agcEnabled;
 std::atomic<bool>  g_bwExpandEnabled;
-SRC_STATE  *g_spec_src;  // sample rate converter for spectrum
-
 // sending and receiving Call Sign data
 std::atomic<GenericFIFO<short>*> g_txDataInFifo;
 struct FIFO         *g_rxDataOutFifo;
@@ -174,19 +174,22 @@ extern int                 g_sfTxFs;
 extern bool                g_loopPlayFileFromRadio;
 extern int                 g_playFileFromRadioEventId;
 
-extern SNDFILE            *g_sfRecFileFromModulator;
-extern bool                g_recFileFromModulator;
+extern std::atomic<SNDFILE*>            g_sfRecFileFromModulator;
+extern std::atomic<bool>                g_recFileFromModulator;
 extern int                 g_recFileFromModulatorEventId;
 
 extern SNDFILE            *g_sfRecMicFile;
 extern bool                g_recFileFromMic;
 extern bool                g_recVoiceKeyerFile;
 
+extern SNDFILE* g_sfRecDecoderFile;
+extern bool g_recFileFromDecoder;
+
 wxWindow           *g_parent;
 
 // Click to tune rx and tx frequency offset states
-float               g_RxFreqOffsetHz;
-float               g_TxFreqOffsetHz;
+std::atomic<float>  g_RxFreqOffsetHz;
+std::atomic<float>  g_TxFreqOffsetHz;
 
 // experimental mutex to make sound card callbacks mutually exclusive
 // TODO: review code and see if we need this any more, as fifos should
@@ -204,8 +207,38 @@ std::atomic<bool> isModemRunning;
 
 FILE *ftest;
 
-// Config file management 
+// Config file management
 wxConfigBase *pConfig = NULL;
+
+// Name used for the separate state-store config object (distinct from the main
+// app config so the last-used path is readable regardless of which backend is
+// active).  On Windows this becomes HKCU\Software\CODEC2-Project\FreeDV-State;
+// on macOS/Linux it becomes a file in the per-user config directory.
+static const wxChar* const FREEDV_STATE_APP_NAME    = wxT("FreeDV-State");
+static const wxChar* const FREEDV_VENDOR_NAME = wxT("CODEC2-Project");
+static const wxChar* const LAST_USED_CONFIG_KEY     = wxT("/LastUsedConfigFile");
+
+wxString getLastUsedConfigPath()
+{
+    wxConfig stateConfig(FREEDV_STATE_APP_NAME, FREEDV_VENDOR_NAME);
+    wxString path;
+    stateConfig.Read(LAST_USED_CONFIG_KEY, &path, wxEmptyString);
+    return path;
+}
+
+void saveLastUsedConfigPath(const wxString& path)
+{
+    wxConfig stateConfig(FREEDV_STATE_APP_NAME, FREEDV_VENDOR_NAME);
+    stateConfig.Write(LAST_USED_CONFIG_KEY, path);
+    stateConfig.Flush();
+}
+
+void clearLastUsedConfigPath()
+{
+    wxConfig stateConfig(FREEDV_STATE_APP_NAME, FREEDV_VENDOR_NAME);
+    stateConfig.Write(LAST_USED_CONFIG_KEY, wxEmptyString);
+    stateConfig.Flush();
+}
 
 // Unit test management
 wxString testName;
@@ -213,8 +246,9 @@ wxString utFreeDVMode;
 wxString utTxFile;
 wxString utTxOutFile;
 wxString utRxFile;
-wxString utTxFeatureFile;
-wxString utRxFeatureFile;
+wxString utRxOutFile;
+std::string utTxFeatureFile;
+std::string utRxFeatureFile;
 long utTxTimeSeconds;
 long utTxAttempts;
 
@@ -441,6 +475,17 @@ void MainApp::UnitTest_()
     }
     else
     {
+        if (utRxOutFile != "")
+        {
+            SF_INFO recSf;
+            recSf.format     = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+            recSf.channels   = 1;
+            recSf.samplerate = RECORD_FILE_SAMPLE_RATE;
+
+            g_sfRecDecoderFile = sf_open((const char*)utRxOutFile.ToUTF8(), SFM_WRITE, &recSf);
+            g_recFileFromDecoder = true;
+        }
+
         if (utRxFile != "")
         {
             // Receive until file has finished playing
@@ -478,6 +523,12 @@ void MainApp::UnitTest_()
                     sync = newSync;
                 }
             } 
+        }
+
+        if (g_recFileFromDecoder)
+        {
+            g_recFileFromDecoder = false;
+            sf_close(g_sfRecDecoderFile);
         }
     }
     
@@ -524,6 +575,7 @@ void MainApp::OnInitCmdLine(wxCmdLineParser& parser)
     parser.AddOption("ut", "unit_test", "Execute FreeDV in unit test mode.");
     parser.AddOption("utmode", wxEmptyString, "Switch FreeDV to the given mode before UT execution.");
     parser.AddOption("rxfile", wxEmptyString, "In UT mode, pipes given WAV file through receive pipeline.");
+    parser.AddOption("rxoutfile", wxEmptyString, "In UT mode, records RX output to the given WAV file.");
     parser.AddOption("txfile", wxEmptyString, "In UT mode, pipes given WAV file through transmit pipeline.");
     parser.AddOption("txoutfile", wxEmptyString, "In UT mode, records TX output to the given WAV file.");
     parser.AddOption("rxfeaturefile", wxEmptyString, "Capture RX features from RADE decoder into the provided file.");
@@ -546,19 +598,102 @@ bool MainApp::OnCmdLineParsed(wxCmdLineParser& parser)
     {
         return false;
     }
-    
+
     wxString configPath;
-    pConfig = wxConfigBase::Get();
     if (parser.Found("f", &configPath))
     {
         log_info("Loading configuration from %s", (const char*)configPath.ToUTF8());
-        pConfig = new wxFileConfig(wxT("FreeDV"), wxT("CODEC2-Project"), configPath, configPath, wxCONFIG_USE_LOCAL_FILE);
+        pConfig = new wxFileConfig(wxT("FreeDV"), FREEDV_VENDOR_NAME, configPath, configPath, wxCONFIG_USE_LOCAL_FILE);
         wxConfigBase::Set(pConfig);
         
         // On Linux/macOS, this replaces $HOME with "~" to shorten the title a bit.
         wxFileName fn(configPath);        
         customConfigFileName = fn.GetFullName();
+        defaultConfigFilePath = fn.GetPath();
     }
+    else
+    {
+        wxString oldFileLocation = wxFileConfig::GetLocalFile("freedv", 0).GetFullPath();
+        wxFileName tempOldFile(oldFileLocation);
+
+#if wxCHECK_VERSION(3,3,0) && defined(__linux__)
+        // Execute this early during the application startup, before the
+        // global wxConfig object is created.
+        bool migrateSuccess = true;
+        wxString newFileLocation = wxFileConfig::GetLocalFile("freedv", wxCONFIG_USE_XDG | wxCONFIG_USE_SUBDIR).GetFullPath();
+        wxString newFileDir = wxFileConfig::GetLocalFile("freedv", wxCONFIG_USE_XDG | wxCONFIG_USE_SUBDIR).GetPath();
+        log_info("Determining if we need to migrate config file to standard location...");
+        log_info("   Old location: %s", (const char*)oldFileLocation.ToUTF8());
+        log_info("   New location: %s", (const char*)newFileLocation.ToUTF8());
+
+        wxFileName tempNewFile(newFileLocation);
+        if (!tempNewFile.IsFileReadable() && tempOldFile.IsFileReadable())
+        {
+            // Migration hasn't happened yet, try to copy to new location.
+            // Note that the return value from Mkdir isn't reliable despite actually
+            // creating the folder, so we should check for its existence separately.
+            wxFileName::Mkdir(newFileDir, wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL);
+            if (!wxDirExists(newFileDir))
+            {
+                log_warn("Could not create folder %s. Migration will not proceed.", (const char*)newFileDir.ToUTF8());
+                migrateSuccess = false;
+            }
+            else
+            {
+                bool copyResult = wxCopyFile(oldFileLocation, newFileLocation);
+                if (!copyResult)
+                {
+                    log_warn("Could not copy %s to %s. Migration will not proceed.", (const char*)oldFileLocation.ToUTF8(), (const char*)newFileLocation.ToUTF8());
+                    migrateSuccess = false;
+                }
+            }
+        }
+ 
+        // Prefer doing it only after successfully calling MigrateLocalFile(),
+        // otherwise, i.e. if it failed, the old config file wouldn't be used.
+        if (migrateSuccess)
+        {
+            wxStandardPaths::Get().SetFileLayout(wxStandardPaths::FileLayout_XDG);
+
+            // Need to explicitly create the wxFileConfig on Linux so that we can force wxWidgets
+            // to load configuration files under a subdirectory. Otherwise, simply FileLayout_XDG
+            // above will use ~/.config/freedv.conf.
+            pConfig = new wxFileConfig(wxT("FreeDV"), FREEDV_VENDOR_NAME, newFileLocation, newFileLocation, wxCONFIG_USE_LOCAL_FILE | wxCONFIG_USE_SUBDIR | wxCONFIG_USE_XDG);
+
+            wxConfigBase::Set(pConfig);
+            defaultConfigFilePath = tempNewFile.GetPath();
+        }
+#else
+        defaultConfigFilePath = tempOldFile.GetPath();
+#endif // wxCHECK_VERSION(3,3,0) && defined(__linux__)
+
+        // If a config file was previously loaded via "Use Configuration...",
+        // restore it now so the user's last session is preserved.
+        wxString lastUsedPath = getLastUsedConfigPath();
+        if (!lastUsedPath.IsEmpty())
+        {
+            if (wxFileExists(lastUsedPath))
+            {
+                log_info("Restoring last-used configuration from %s",
+                         (const char*)lastUsedPath.ToUTF8());
+                pConfig = new wxFileConfig(wxT("FreeDV"), FREEDV_VENDOR_NAME,
+                                           lastUsedPath, lastUsedPath,
+                                           wxCONFIG_USE_LOCAL_FILE);
+                wxConfigBase::Set(pConfig);
+                wxFileName fn(lastUsedPath);
+                customConfigFileName = fn.GetFullName();
+                defaultConfigFilePath = fn.GetPath();
+            }
+            else
+            {
+                log_warn("Last-used config file '%s' no longer exists; reverting to default.",
+                         (const char*)lastUsedPath.ToUTF8());
+                clearLastUsedConfigPath();
+            }
+        }
+    }
+
+    pConfig = wxConfigBase::Get();
     pConfig->SetRecordDefaults();
     
     if (parser.Found("ut", &testName))
@@ -574,6 +709,11 @@ bool MainApp::OnCmdLineParsed(wxCmdLineParser& parser)
             log_info("Piping %s through RX pipeline", (const char*)utRxFile.ToUTF8());
         }
         
+        if (parser.Found("rxoutfile", &utRxOutFile))
+        {
+            log_info("Recording RX output to %s", (const char*)utRxOutFile.ToUTF8());
+        }
+
         if (parser.Found("txfile", &utTxFile))
         {
             log_info("Piping %s through TX pipeline", (const char*)utTxFile.ToUTF8());
@@ -603,14 +743,18 @@ bool MainApp::OnCmdLineParsed(wxCmdLineParser& parser)
         }
     }
     
-    if (parser.Found("rxfeaturefile", &utRxFeatureFile))
+    wxString utRxFeatureFileTmp; 
+    if (parser.Found("rxfeaturefile", &utRxFeatureFileTmp))
     {
-        log_info("Capturing RADE RX features into file %s", (const char*)utRxFeatureFile.ToUTF8());
+        utRxFeatureFile = utRxFeatureFileTmp.ToUTF8();
+        log_info("Capturing RADE RX features into file %s", utRxFeatureFile.c_str());
     }
-    
-    if (parser.Found("txfeaturefile", &utTxFeatureFile))
+   
+    wxString utTxFeatureFileTmp; 
+    if (parser.Found("txfeaturefile", &utTxFeatureFileTmp))
     {
-        log_info("Capturing RADE TX features into file %s", (const char*)utTxFeatureFile.ToUTF8());
+        utTxFeatureFile = utTxFeatureFileTmp.ToUTF8();
+        log_info("Capturing RADE TX features into file %s", utTxFeatureFile.c_str());
     }
     
     return true;
@@ -636,7 +780,7 @@ bool MainApp::OnInit()
     {
         return false;
     }
-    SetVendorName(wxT("CODEC2-Project"));
+    SetVendorName(FREEDV_VENDOR_NAME);
     SetAppName(wxT("FreeDV"));      // not needed, it's the default value
     
     golay23_init();
@@ -785,8 +929,11 @@ void MainFrame::loadConfiguration_()
     // for backwards compatibility.    
     if (wxGetApp().appConfiguration.rigControlConfiguration.hamlibRigName == wxT(""))
     {
-        wxGetApp().m_intHamlibRig = pConfig->ReadLong("/Hamlib/RigName", 0);
-        wxGetApp().appConfiguration.rigControlConfiguration.hamlibRigName = HamlibRigController::RigIndexToName(wxGetApp().m_intHamlibRig);
+        wxGetApp().m_intHamlibRig = pConfig->ReadLong("/Hamlib/RigName", -1);
+        if (wxGetApp().m_intHamlibRig >= 0)
+        {
+            wxGetApp().appConfiguration.rigControlConfiguration.hamlibRigName = HamlibRigController::RigIndexToName(wxGetApp().m_intHamlibRig);
+        }
     }
     else
     {
@@ -907,6 +1054,9 @@ setDefaultMode:
     
     // Show/hide frequency box based on CAT control status
     m_freqBox->Show(isFrequencyControlEnabled_());
+
+    restoreCallsignListFromCsv_();
+    m_logQSO->Enable(m_lastReportedCallsignListView->GetItemCount() > 0);
 
     // Show/hide callsign combo box based on reporting enablement
     if (wxGetApp().appConfiguration.reportingConfiguration.reportingEnabled)
@@ -1041,6 +1191,7 @@ MainFrame::MainFrame(wxWindow *parent) : TopFrame(parent, wxID_ANY, _("FreeDV ")
     terminating_ = false;
     realigned_ = false;
     syncState_ = false;
+    txChangeoverOccurring_ = false;
 
     // Add config file name to title bar if provided at the command line.
     if (wxGetApp().customConfigFileName != "")
@@ -1065,6 +1216,7 @@ MainFrame::MainFrame(wxWindow *parent) : TopFrame(parent, wxID_ANY, _("FreeDV ")
 
     m_zoom              = 1.;
     suppressFreqModeUpdates_ = false;
+    lastBand_ = BAND_OTHER;
     
     tools->AppendSeparator();
     wxMenuItem* m_menuItemToolsConfigDelete;
@@ -1105,6 +1257,9 @@ MainFrame::MainFrame(wxWindow *parent) : TopFrame(parent, wxID_ANY, _("FreeDV ")
      m_togBtnOnOff->Connect(wxEVT_UPDATE_UI, wxUpdateUIEventHandler(MainFrame::OnTogBtnOnOffUI), NULL, this);
     m_togBtnAnalog->Connect(wxEVT_UPDATE_UI, wxUpdateUIEventHandler(MainFrame::OnTogBtnAnalogClickUI), NULL, this);
    // m_btnTogPTT->Connect(wxEVT_UPDATE_UI, wxUpdateUIEventHandler(MainFrame::OnTogBtnPTT_UI), NULL, this);
+    m_btnTogPTT->Bind(wxEVT_LEFT_DOWN, &MainFrame::OnTogBtnPTTMouseDown, this);
+    m_btnTogPTT->Bind(wxEVT_LEFT_DCLICK, &MainFrame::OnTogBtnPTTMouseDown, this);
+    m_btnTogPTT->Bind(wxEVT_LEAVE_WINDOW, &MainFrame::OnTogBtnPTTMouseLeave, this);
 
     loadConfiguration_();
     
@@ -1119,7 +1274,11 @@ MainFrame::MainFrame(wxWindow *parent) : TopFrame(parent, wxID_ANY, _("FreeDV ")
 
     m_plotTimer.SetOwner(this, ID_TIMER_UPDATE_OTHER);
     m_pskReporterTimer.SetOwner(this, ID_TIMER_PSKREPORTER);
-    m_updFreqStatusTimer.SetOwner(this,ID_TIMER_UPD_FREQ);  
+    m_updFreqStatusTimer.SetOwner(this,ID_TIMER_UPD_FREQ);
+    m_totTimer.SetOwner(this, ID_TIMER_TOT);
+    Bind(wxEVT_TIMER, &MainFrame::OnTOTTimer, this, ID_TIMER_TOT);
+    m_totWarningTimer.SetOwner(this, ID_TIMER_TOT_WARNING);
+    Bind(wxEVT_TIMER, &MainFrame::OnTOTWarningTimer, this, ID_TIMER_TOT_WARNING);
 #endif
     
     // Create voice keyer popup menu.
@@ -1210,11 +1369,11 @@ MainFrame::MainFrame(wxWindow *parent) : TopFrame(parent, wxID_ANY, _("FreeDV ")
 
     // init click-tune states
 
-    g_RxFreqOffsetHz = 0.0;
-    m_panelWaterfall->setRxFreq(FDMDV_FCENTRE - g_RxFreqOffsetHz);
-    m_panelSpectrum->setRxFreq(FDMDV_FCENTRE - g_RxFreqOffsetHz);
+    g_RxFreqOffsetHz.store(0.0f, std::memory_order_relaxed);
+    m_panelWaterfall->setRxFreq(FDMDV_FCENTRE - g_RxFreqOffsetHz.load(std::memory_order_relaxed));
+    m_panelSpectrum->setRxFreq(FDMDV_FCENTRE - g_RxFreqOffsetHz.load(std::memory_order_relaxed));
 
-    g_TxFreqOffsetHz = 0.0;
+    g_TxFreqOffsetHz.store(0.0f, std::memory_order_relaxed);
 
     g_tx.store(false, std::memory_order_release);
     g_voice_keyer_tx.store(false, std::memory_order_release);
@@ -1297,7 +1456,136 @@ MainFrame::MainFrame(wxWindow *parent) : TopFrame(parent, wxID_ANY, _("FreeDV ")
     g_dump_timing = g_dump_fifo_state = 0;
 }
 
+void MainFrame::restoreCallsignListFromCsv_()
+{
+    auto csvPath = wxGetApp().appConfiguration.reportingConfiguration.csvLogFilePath.get();
+    if (csvPath.IsEmpty())
+        return;
+
+    std::ifstream file(csvPath.ToStdString());
+    if (!file.is_open())
+        return;
+
+    std::vector<std::string> lines;
+    std::string line;
+    bool firstLine = true;
+    while (std::getline(file, line))
+    {
+        if (firstLine) { firstLine = false; continue; } // skip CSV header
+        if (!line.empty())
+            lines.push_back(line);
+    }
+
+    const int MAX_RESTORE_ROWS = 100;
+    if ((int)lines.size() > MAX_RESTORE_ROWS)
+        lines.erase(lines.begin(), lines.begin() + ((int)lines.size() - MAX_RESTORE_ROWS));
+
+    bool freqAsKhz = wxGetApp().appConfiguration.reportingConfiguration.reportingFrequencyAsKhz;
+
+    for (auto& csvLine : lines)
+    {
+        // CSV columns: date,time,callsign,mode,frequency_hz,snr_db
+        std::istringstream ss(csvLine);
+        std::string date, time, callsign, mode, freqStr, snrStr;
+        if (!std::getline(ss, date, ',')) continue;
+        if (!std::getline(ss, time, ',')) continue;
+        if (!std::getline(ss, callsign, ',')) continue;
+        if (!std::getline(ss, mode, ',')) continue;
+        if (!std::getline(ss, freqStr, ',')) continue;
+        if (!std::getline(ss, snrStr)) continue;
+
+        uint64_t freqHz = 0;
+        try { freqHz = std::stoull(freqStr); } catch (...) { continue; }
+
+        wxString freqDisplay;
+        if (freqAsKhz)
+            freqDisplay = wxNumberFormatter::ToString(freqHz / 1000.0, 1);
+        else
+            freqDisplay = wxNumberFormatter::ToString(freqHz / 1000000.0, 4);
+
+        wxString dateTime = wxString::Format("%s %s", date, time);
+
+        int snrInt = 0;
+        try { snrInt = std::stoi(snrStr); } catch (...) { continue; }
+        wxString snrDisplay;
+        snrDisplay.Printf(SNR_FORMAT_STR_NO_DB, (float)snrInt);
+
+        auto index = m_lastReportedCallsignListView->InsertItem(0, wxString(callsign), 0);
+        m_lastReportedCallsignListView->SetItem(index, 1, freqDisplay);
+        m_lastReportedCallsignListView->SetItem(index, 2, dateTime);
+        m_lastReportedCallsignListView->SetItem(index, 3, snrDisplay);
+        m_lastReportedCallsignListView->SetItemTextColour(index, wxColour(160, 160, 160));
+    }
+
+    for (int col = 0; col < 4; col++)
+        m_lastReportedCallsignListView->SetColumnWidth(col, getIdealStationsHeardColumnLength_(col));
+}
+
 static std::recursive_mutex stoppingMutex;
+
+void MainFrame::setConfiguration_(wxConfigBase* config)
+{
+    pConfig = config;
+    wxConfigBase::Set(pConfig);
+        
+    if (wxGetApp().m_sharedReporterObject)
+    {
+        wxGetApp().m_sharedReporterObject = nullptr;
+    }
+
+    if (m_reporterDialog != nullptr)
+    {
+        m_reporterDialog->setReporter(nullptr);
+        wxGetApp().SafeYield(nullptr, false); // make sure we handle any remaining Reporter messages before dispose
+        m_reporterDialog->Close();
+        m_reporterDialog->Destroy();
+        m_reporterDialog = nullptr;
+    }
+    
+    // Resets all configuration to defaults.
+    loadConfiguration_();
+}
+
+void MainFrame::exportConfiguration_(wxConfigBase* config)
+{
+    if (!IsIconized()) {
+        int w = 0;
+        int h = 0;
+        int x = 0;
+        int y = 0;
+        GetSize(&w, &h);
+        GetPosition(&x, &y);
+        
+        wxGetApp().appConfiguration.mainWindowLeft = x;
+        wxGetApp().appConfiguration.mainWindowTop = y;
+        wxGetApp().appConfiguration.mainWindowWidth = w;
+        wxGetApp().appConfiguration.mainWindowHeight = h;
+    }
+
+    if (wxGetApp().appConfiguration.experimentalFeatures)
+    {
+        wxGetApp().appConfiguration.tabLayout = ((TabFreeAuiNotebook*)m_auiNbookCtrl)->SavePerspective();
+    }
+    
+    wxGetApp().appConfiguration.squelchActive = g_SquelchActive;
+    wxGetApp().appConfiguration.squelchLevel = (int)(g_SquelchLevel*2.0);
+
+    wxGetApp().appConfiguration.transmitLevel = g_txLevel;
+    autoSaveCurrentBandLevels_(false);
+
+    int mode = FREEDV_MODE_RADE;
+    if (m_rb1600->GetValue())
+        mode = 0;
+    if (m_rb700d->GetValue())
+        mode = 4;
+    if (m_rb700e->GetValue())
+        mode = 5;
+    if (m_rbRADE->GetValue())
+        mode = FREEDV_MODE_RADE;
+    
+    wxGetApp().appConfiguration.currentFreeDVMode = mode;
+    wxGetApp().appConfiguration.save(config);
+}
 
 //-------------------------------------------------------------------------
 // ~MainFrame()
@@ -1306,11 +1594,6 @@ MainFrame::~MainFrame()
 {
     delete voiceKeyerPopupMenu_;
     
-    int x;
-    int y;
-    int w;
-    int h;
-
     if (m_filterDialog != nullptr)
     {
         m_filterDialog->Close();
@@ -1339,38 +1622,7 @@ MainFrame::~MainFrame()
     wxGetApp().rigFrequencyController = nullptr;
     wxGetApp().m_pttInSerialPort = nullptr;
     
-    if (!IsIconized()) {
-        GetSize(&w, &h);
-        GetPosition(&x, &y);
-        
-        wxGetApp().appConfiguration.mainWindowLeft = x;
-        wxGetApp().appConfiguration.mainWindowTop = y;
-        wxGetApp().appConfiguration.mainWindowWidth = w;
-        wxGetApp().appConfiguration.mainWindowHeight = h;
-    }
-
-    if (wxGetApp().appConfiguration.experimentalFeatures)
-    {
-        wxGetApp().appConfiguration.tabLayout = ((TabFreeAuiNotebook*)m_auiNbookCtrl)->SavePerspective();
-    }
-    
-    wxGetApp().appConfiguration.squelchActive = g_SquelchActive;
-    wxGetApp().appConfiguration.squelchLevel = (int)(g_SquelchLevel*2.0);
-
-    wxGetApp().appConfiguration.transmitLevel = g_txLevel;
-    
-    int mode = FREEDV_MODE_RADE;
-    if (m_rb1600->GetValue())
-        mode = 0;
-    if (m_rb700d->GetValue())
-        mode = 4;
-    if (m_rb700e->GetValue())
-        mode = 5;
-    if (m_rbRADE->GetValue())
-        mode = FREEDV_MODE_RADE;
-    
-    wxGetApp().appConfiguration.currentFreeDVMode = mode;
-    wxGetApp().appConfiguration.save(pConfig);
+    exportConfiguration_(pConfig);
 
     m_togBtnOnOff->Disconnect(wxEVT_UPDATE_UI, wxUpdateUIEventHandler(MainFrame::OnTogBtnOnOffUI), NULL, this);
     m_togBtnAnalog->Disconnect(wxEVT_UPDATE_UI, wxUpdateUIEventHandler(MainFrame::OnTogBtnAnalogClickUI), NULL, this);
@@ -1514,7 +1766,7 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
      else if (timerId == ID_TIMER_WATERFALL)
      {
           if (m_panelWaterfall->checkDT()) {
-              m_panelWaterfall->setRxFreq(FDMDV_FCENTRE - g_RxFreqOffsetHz);
+              m_panelWaterfall->setRxFreq(FDMDV_FCENTRE - g_RxFreqOffsetHz.load(std::memory_order_relaxed));
               m_panelWaterfall->m_newdata = true;
               m_panelWaterfall->setColor(wxGetApp().appConfiguration.waterfallColor);
               m_panelWaterfall->addOffset(freedvInterface.getCurrentRxModemOffset());
@@ -1524,7 +1776,7 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
       }
       else if (timerId == ID_TIMER_SPECTRUM)
       {
-          m_panelSpectrum->setRxFreq(FDMDV_FCENTRE - g_RxFreqOffsetHz);
+          m_panelSpectrum->setRxFreq(FDMDV_FCENTRE - g_RxFreqOffsetHz.load(std::memory_order_relaxed));
     
           // Note: each element in this combo box is a numeric value starting from 1,
           // so just incrementing the selected index should get us the correct results.
@@ -2200,6 +2452,7 @@ void MainFrame::OnChangeTxMode( wxCommandEvent& event )
 void MainFrame::performFreeDVOn_()
 {
     log_debug("Start .....");
+    isModemRunning.store(false, std::memory_order_release);
     g_queueResync.store(false, std::memory_order_release);
     endingTx.store(false, std::memory_order_release);
     g_voice_keyer_tx.store(false, std::memory_order_release);
@@ -2221,8 +2474,8 @@ void MainFrame::performFreeDVOn_()
 
         m_txtCtrlCallSign->SetValue(wxT(""));
         m_lastReportedCallsignListView->DeleteAllItems();
-        m_cboLastReportedCallsigns->Enable(false);
-            
+        restoreCallsignListFromCsv_();
+        m_cboLastReportedCallsigns->Enable(m_lastReportedCallsignListView->GetItemCount() > 0);
         m_cboLastReportedCallsigns->SetText(wxT(""));
         
         m_logQSO->Disable();
@@ -2428,6 +2681,19 @@ void MainFrame::performFreeDVOn_()
                     OpenOmniRig();
                 }
     #endif // defined(WIN32)
+                
+                // Set frequency/mode to the one pre-selected by the user before start.
+                if (wxGetApp().rigFrequencyController && 
+                    (wxGetApp().appConfiguration.rigControlConfiguration.hamlibEnableFreqModeChanges || wxGetApp().appConfiguration.rigControlConfiguration.hamlibEnableFreqChangesOnly) &&
+                    wxGetApp().appConfiguration.reportingConfiguration.reportingFrequency > 0)
+                {
+                    wxGetApp().rigFrequencyController->setFrequency(wxGetApp().appConfiguration.reportingConfiguration.reportingFrequency);
+        
+                    if (wxGetApp().appConfiguration.rigControlConfiguration.hamlibEnableFreqModeChanges)
+                    {
+                        wxGetApp().rigFrequencyController->setMode(getCurrentMode_());
+                    }
+                }
                     
                 // Initialize PSK Reporter reporting.
                 if (wxGetApp().appConfiguration.reportingConfiguration.reportingEnabled)
@@ -2441,11 +2707,14 @@ void MainFrame::performFreeDVOn_()
                     }
                     else
                     {
+                        auto csvPath = wxGetApp().appConfiguration.reportingConfiguration.csvLogFilePath.get();
+                        wxGetApp().m_reporters.push_back(std::make_shared<CsvReporter>(csvPath.ToStdString()));
+
                         if (wxGetApp().appConfiguration.reportingConfiguration.pskReporterEnabled)
                         {
-                            auto pskReporter = 
+                            auto pskReporter =
                                 std::make_shared<PskReporter>(
-                                    wxGetApp().appConfiguration.reportingConfiguration.reportingCallsign->ToStdString(), 
+                                    wxGetApp().appConfiguration.reportingConfiguration.reportingCallsign->ToStdString(),
                                     wxGetApp().appConfiguration.reportingConfiguration.reportingGridSquare->ToStdString(),
                                     std::string("FreeDV ") + GetFreeDVVersion());
                             assert(pskReporter != nullptr);
@@ -2455,11 +2724,19 @@ void MainFrame::performFreeDVOn_()
                         if (wxGetApp().appConfiguration.reportingConfiguration.freedvReporterEnabled)
                         {
                             wxGetApp().m_reporters.push_back(wxGetApp().m_sharedReporterObject);
-                            
+
                             if (!m_reporterHidden->GetValue())
                             {
                                 wxGetApp().m_sharedReporterObject->showOurselves();
                             }
+                        }
+
+                        if (wxGetApp().appConfiguration.reportingConfiguration.udpBroadcastEnabled)
+                        {
+                            auto udpBroadcastReporter = std::make_shared<UdpReporter>(
+                                wxGetApp().appConfiguration.reportingConfiguration.udpBroadcastAddress->ToStdString(),
+                                wxGetApp().appConfiguration.reportingConfiguration.udpBroadcastPort);
+                            wxGetApp().m_reporters.push_back(udpBroadcastReporter);
                         }
 
                         // Enable FreeDV Reporter timer (every 5 minutes).
@@ -2542,6 +2819,16 @@ void MainFrame::performFreeDVOff_()
 #ifdef _USE_TIMER
     executeOnUiThreadAndWait_([&]() 
     {
+        // Disable Tune mode if needed
+        if (m_btnTogTune->GetValue())
+        {
+            m_btnTogTune->SetValue(false);
+            
+            // Ensures that Tune button actions are actually run to stop transmitting the tone.
+            wxCommandEvent tmpEvent;
+            OnTogBtnTune(tmpEvent);
+        }
+        
         m_sliderMicSpkrLevel->Enable(false);
         m_btnTogTune->Enable(false);
 
@@ -2613,8 +2900,8 @@ void MainFrame::performFreeDVOff_()
         m_rb700d->Enable();
         m_rb700e->Enable();
         
-        m_logQSO->Disable();
-        
+        m_logQSO->Enable(m_lastReportedCallsignListView->GetItemCount() > 0);
+
         // Make sure QSY button becomes disabled after stop.
         if (m_reporterDialog != nullptr)
         {
@@ -3623,53 +3910,67 @@ void MainFrame::OnTxOutAudioData_(IAudioDevice& dev, void* data, size_t size, vo
     short* tmpOutput = cbData->tmpWriteTxBuffer_.get();
 
     auto toRead = std::min((size_t)cbData->outfifo1->numUsed(), size);
-    if (toRead < size)
+    auto isTuning = cbData->isTuning.load(std::memory_order_acquire);
+    if (toRead < size && !isTuning)
     {
         g_outfifo1_empty.fetch_add(1, std::memory_order_release);
     }
-
-    cbData->outfifo1->read(tmpOutput, toRead);
-    auto numChannels = dev.getNumChannels();
-    auto enableVoxTone = g_tx.load(std::memory_order_acquire) && cbData->leftChannelVoxTone.load(std::memory_order_acquire);
-    auto isTuning = cbData->isTuning.load(std::memory_order_acquire);
-    auto sr = dev.getSampleRate();
-
-    if (isTuning)
-    {
-        // This may be better as a pipeline step but would also add additional
-        // complexity (i.e. additional decision steps to let through the sine wave
-        // vs. regular TX).
-        auto txLevel = g_tuneLevelScale.load(std::memory_order_acquire) * (SHRT_MAX / 2);
-        for (unsigned long index = 0; index < size; index++)
-        {
-            auto carrierSample = txLevel * sin(2 * M_PI * FDMDV_FCENTRE * cbData->tuneSineWaveSampleNumber / sr);
-            for (int i = 0; i < numChannels; i++)
-            {
-                *audioData++ = carrierSample;
-            }
-            cbData->tuneSineWaveSampleNumber = (cbData->tuneSineWaveSampleNumber + 1) % sr;
-        }
-    }
     else
     {
-        for (size_t count = 0; count < size; count++, audioData += numChannels)
+        if (toRead >= size)
         {
-            auto output = (count < toRead) ? tmpOutput[count] : 0;
+            cbData->outfifo1->read(tmpOutput, size);
+        }
 
-            // write signal to all channels to start. This is so that
-            // the compiler can optimize for the most common case.
-            for (auto j = 0; j < numChannels; j++)
+        auto numChannels = dev.getNumChannels();
+        auto enableVoxTone = g_tx.load(std::memory_order_acquire) && cbData->leftChannelVoxTone.load(std::memory_order_acquire);
+        auto sr = dev.getSampleRate();
+
+        if (isTuning)
+        {
+            // This may be better as a pipeline step but would also add additional
+            // complexity (i.e. additional decision steps to let through the sine wave
+            // vs. regular TX).
+            auto txLevel = g_tuneLevelScale.load(std::memory_order_acquire) * (SHRT_MAX / 2);
+
+            // Load once before the loop and store once after to avoid per-sample atomic
+            // memory barriers, which can cause the audio callback to overrun its deadline.
+            auto sineWaveSampleNumber = cbData->tuneSineWaveSampleNumber.load(std::memory_order_acquire);
+            const double phaseIncrement = 2.0 * M_PI * FDMDV_FCENTRE / sr;
+            for (unsigned long index = 0; index < size; index++)
             {
-                audioData[j] = output;
+                auto carrierSample = txLevel * sin(phaseIncrement * sineWaveSampleNumber);
+                for (int i = 0; i < numChannels; i++)
+                {
+                    *audioData++ = carrierSample;
+                }
+                // Conditional branch is cheaper than integer division (% sr).
+                if (++sineWaveSampleNumber >= (int)sr)
+                    sineWaveSampleNumber = 0;
             }
-                        
-            // If VOX tone is enabled, go back through and add the VOX tone
-            // on the left channel.
-            if (enableVoxTone)
+            cbData->tuneSineWaveSampleNumber.store(sineWaveSampleNumber, std::memory_order_release);
+        }
+        else
+        {
+            for (size_t count = 0; count < size; count++, audioData += numChannels)
             {
-                cbData->voxTonePhase += 2.0*M_PI*VOX_TONE_FREQ/sr;
-                cbData->voxTonePhase -= 2.0*M_PI*floor(cbData->voxTonePhase/(2.0*M_PI));
-                audioData[0] = VOX_TONE_AMP*cos(cbData->voxTonePhase);
+                 auto output = (count < toRead) ? tmpOutput[count] : 0;
+
+                // write signal to all channels to start. This is so that
+                // the compiler can optimize for the most common case.
+                for (auto j = 0; j < numChannels; j++)
+                {
+                    audioData[j] = output;
+                }
+                        
+                // If VOX tone is enabled, go back through and add the VOX tone
+                // on the left channel.
+                if (enableVoxTone)
+                {
+                    cbData->voxTonePhase += 2.0*M_PI*VOX_TONE_FREQ/sr;
+                    cbData->voxTonePhase -= 2.0*M_PI*floor(cbData->voxTonePhase/(2.0*M_PI));
+                    audioData[0] = VOX_TONE_AMP*cos(cbData->voxTonePhase);
+                }
             }
         }
     }
@@ -3703,14 +4004,16 @@ void MainFrame::OnRxOutAudioData_(IAudioDevice& dev, void* data, size_t size, vo
     {
         g_outfifo2_empty.fetch_add(1, std::memory_order_release);
     }
-
-    cbData->outfifo2->read(tmpOutput, toRead);
-    auto numChannels = dev.getNumChannels();
-    for (size_t count = 0; count < size; count++)
+    else
     {
-        for (int j = 0; j < numChannels; j++)
+        cbData->outfifo2->read(tmpOutput, toRead);
+        auto numChannels = dev.getNumChannels();
+        for (size_t count = 0; count < size; count++)
         {
-            *audioData++ = (count < toRead) ? tmpOutput[count] : 0;
+            for (int j = 0; j < numChannels; j++)
+            {
+                *audioData++ = (count < toRead) ? tmpOutput[count] : 0;
+            }
         }
     }
 }

@@ -35,7 +35,7 @@
 #include <chrono>
 using namespace std::chrono_literals;
 
-#include "../util/sanitizers.h"
+#include "freedv_sanitizers.h"
 
 // WebRTC uses FS, which is defined in defines.h. Thus, it needs to be included
 // first.
@@ -63,6 +63,8 @@ using namespace std::chrono_literals;
 #include "FreeDVReceiveStep.h"
 #include "MuteStep.h"
 #include "LinkStep.h"
+#include "BeepStep.h"
+#include "MixStep.h"
 
 #include "util/logging/ulog.h"
 #include "os/os_interface.h"
@@ -72,8 +74,8 @@ using namespace std::chrono_literals;
 // Experimental options for potential future release:
 //
 // * ENABLE_FASTER_PLOTS: This uses a faster resampling algorithm to reduce the CPU
-//   usage required to generate various plots in the user interface. (Tech note: When 
-//   enabled, libsamplerate is directed to use SRC_LINEAR for the plot resampling.)
+//   usage required to generate various plots in the user interface. (Tech note: When
+//   enabled, r8brain uses a wider transition band for the plot resampling.)
 // * ENABLE_PROCESSING_STATS: This causes execution statistics to be collected for RX and TX
 //   processing and output in the log after the user pushes Stop. (Define in .h file.)
 
@@ -91,12 +93,11 @@ extern std::atomic<bool> endingTx;
 extern std::atomic<bool> g_playFileToMicIn;
 extern int g_sfTxFs;
 extern bool g_loopPlayFileToMicIn;
-extern float g_TxFreqOffsetHz;
+extern std::atomic<float> g_TxFreqOffsetHz;
 extern GenericFIFO<short> g_plotSpeechInFifo;
 extern GenericFIFO<short> g_plotDemodInFifo;
 extern GenericFIFO<short> g_plotSpeechOutFifo;
 extern int g_mode;
-extern bool g_recFileFromModulator;
 extern int g_txLevel;
 extern std::atomic<float> g_txLevelScale;
 extern int g_dump_timing;
@@ -106,6 +107,7 @@ extern bool g_recFileFromRadio;
 extern unsigned int g_recFromRadioSamples;
 extern std::atomic<bool> g_playFileFromRadio;
 extern int g_sfFs;
+extern std::atomic<bool>     g_totBeepActive;
 extern bool g_loopPlayFileFromRadio;
 extern int g_SquelchActive;
 extern float g_SquelchLevel;
@@ -113,7 +115,7 @@ extern float g_tone_phase;
 extern GenericFIFO<float> g_avmag;
 extern std::atomic<int> g_State;
 extern std::atomic<int> g_channel_noise;
-extern float g_RxFreqOffsetHz;
+extern std::atomic<float> g_RxFreqOffsetHz;
 extern float g_sig_pwr_av;
 extern std::atomic<bool> g_voice_keyer_tx;
 extern std::atomic<bool> g_eoo_enqueued;
@@ -137,7 +139,8 @@ static auto& NonblockingWxGetApp() FREEDV_NONBLOCKING
 
 #include <sndfile.h>
 extern std::atomic<SNDFILE*> g_sfPlayFile;
-extern SNDFILE* g_sfRecFileFromModulator;
+extern std::atomic<SNDFILE*>            g_sfRecFileFromModulator;
+extern std::atomic<bool>                g_recFileFromModulator;
 extern SNDFILE* g_sfRecFile;
 extern SNDFILE* g_sfRecMicFile;
 extern SNDFILE* g_sfRecDecoderFile;
@@ -147,15 +150,6 @@ extern bool g_recFileFromMic;
 extern bool g_recVoiceKeyerFile;
 extern bool g_recFileFromDecoder;
 
-// TBD -- shouldn't be needed once we've fully converted over
-extern int resample(SRC_STATE *src,
-            short      output_short[],
-            short      input_short[],
-            int        output_sample_rate,
-            int        input_sample_rate,
-            int        length_output_short, // maximum output array length in samples
-            int        length_input_short
-            );
 #include "sox_biquad.h"
 
 void TxRxThread::initializePipeline_()
@@ -277,7 +271,7 @@ void TxRxThread::initializePipeline_()
         auto digitalTxStep = freedvInterface.createTransmitPipeline(
             inputSampleRate_, 
             outputSampleRate_, 
-            +[]() FREEDV_NONBLOCKING { return g_TxFreqOffsetHz; },
+            +[]() FREEDV_NONBLOCKING { return g_TxFreqOffsetHz.load(std::memory_order_relaxed); },
             helper_);
         auto digitalTxPipeline = new AudioPipeline(inputSampleRate_, outputSampleRate_); 
         digitalTxPipeline->appendPipelineStep(digitalTxStep);
@@ -291,7 +285,7 @@ void TxRxThread::initializePipeline_()
         // Record modulated output (optional)
         auto recordModulatedStep = new RecordStep(
             RECORD_FILE_SAMPLE_RATE, 
-            []() { return g_sfRecFileFromModulator; }, 
+            []() { return g_sfRecFileFromModulator.load(std::memory_order_acquire); },
             [](int) {
                 // empty
             });
@@ -319,6 +313,9 @@ void TxRxThread::initializePipeline_()
     else
     {
         pipeline_ = std::make_unique<AudioPipeline>(inputSampleRate_, outputSampleRate_);
+
+        auto activeRxPipeline = new AudioPipeline(inputSampleRate_, outputSampleRate_);
+
         // Record from radio step (optional)
         auto recordRadioStep = new RecordStep(
             RECORD_FILE_SAMPLE_RATE, 
@@ -343,7 +340,7 @@ void TxRxThread::initializePipeline_()
             recordRadioTap,
             bypassRecordRadio
         );
-        pipeline_->appendPipelineStep(eitherOrRecordRadio);
+        activeRxPipeline->appendPipelineStep(eitherOrRecordRadio);
         
         // Play from radio step (optional)
         auto eitherOrBypassPlayRadio = new AudioPipeline(inputSampleRate_, inputSampleRate_);
@@ -370,7 +367,7 @@ void TxRxThread::initializePipeline_()
             },
             eitherOrPlayRadio,
             eitherOrBypassPlayRadio);
-        pipeline_->appendPipelineStep(eitherOrPlayRadioStep);
+        activeRxPipeline->appendPipelineStep(eitherOrPlayRadioStep);
         
         // Resample for plot step (demod in)
         auto resampleForPlotStep = new ResampleForPlotStep(&g_plotDemodInFifo);
@@ -382,7 +379,7 @@ void TxRxThread::initializePipeline_()
         resampleForPlotPipeline->appendPipelineStep(resampleForPlotStep);
 
         auto resampleForPlotTap = new TapStep(inputSampleRate_, resampleForPlotPipeline);
-        pipeline_->appendPipelineStep(resampleForPlotTap);
+        activeRxPipeline->appendPipelineStep(resampleForPlotTap);
 
         // Tone interferer step (optional)
         auto bypassToneInterferer = new AudioPipeline(inputSampleRate_, inputSampleRate_);
@@ -397,7 +394,7 @@ void TxRxThread::initializePipeline_()
             toneInterfererStep,
             bypassToneInterferer
         );
-        pipeline_->appendPipelineStep(eitherOrToneInterferer);
+        activeRxPipeline->appendPipelineStep(eitherOrToneInterferer);
         
         // RF spectrum computation step
         auto computeRfSpectrumStep = new ComputeRfSpectrumStep(
@@ -413,7 +410,7 @@ void TxRxThread::initializePipeline_()
         computeRfSpectrumPipeline->appendPipelineStep(computeRfSpectrumStep);
         
         auto computeRfSpectrumTap = new TapStep(inputSampleRate_, computeRfSpectrumPipeline);
-        pipeline_->appendPipelineStep(computeRfSpectrumTap);
+        activeRxPipeline->appendPipelineStep(computeRfSpectrumTap);
         
         // RX demodulation step
         auto bypassRfDemodulationPipeline = new AudioPipeline(inputSampleRate_, outputSampleRate_);
@@ -423,7 +420,7 @@ void TxRxThread::initializePipeline_()
             +[]() FREEDV_NONBLOCKING { return &g_State; },
             +[]() FREEDV_NONBLOCKING { return g_channel_noise.load(std::memory_order_acquire); },
             +[]() FREEDV_NONBLOCKING { return NonblockingWxGetApp().appConfiguration.noiseSNR.getWithoutProcessing(); },
-            +[]() FREEDV_NONBLOCKING { return g_RxFreqOffsetHz; },
+            +[]() FREEDV_NONBLOCKING { return g_RxFreqOffsetHz.load(std::memory_order_relaxed); },
             +[]() FREEDV_NONBLOCKING { return &g_sig_pwr_av; },
             helper_
         );
@@ -465,7 +462,7 @@ void TxRxThread::initializePipeline_()
             });
             monitorPipeline->appendPipelineStep(monitorLevelStep);
 
-            auto muteStep = new MuteStep(outputSampleRate_);
+            auto muteStep = new MuteStep(inputSampleRate_, outputSampleRate_);
             
             mutePipeline->appendPipelineStep(muteStep);
             
@@ -492,9 +489,10 @@ void TxRxThread::initializePipeline_()
                 +[]() FREEDV_NONBLOCKING { return g_analog ||
                     (
                         (g_recVoiceKeyerFile) ||
-                        (g_voice_keyer_tx.load(std::memory_order_acquire) && NonblockingWxGetApp().appConfiguration.monitorVoiceKeyerAudio.getWithoutProcessing()) || 
+                        (g_voice_keyer_tx.load(std::memory_order_acquire) && NonblockingWxGetApp().appConfiguration.monitorVoiceKeyerAudio.getWithoutProcessing()) ||
                         (g_tx.load(std::memory_order_acquire) && NonblockingWxGetApp().appConfiguration.monitorTxAudio.getWithoutProcessing())
-                    ); },
+                    ); 
+                },
                 bypassRfDemodulationPipeline,
                 rfDemodulationPipeline);
         }
@@ -506,7 +504,7 @@ void TxRxThread::initializePipeline_()
                 rfDemodulationPipeline);
         }
 
-        pipeline_->appendPipelineStep(eitherOrRfDemodulationStep);
+        activeRxPipeline->appendPipelineStep(eitherOrRfDemodulationStep);
 
         // Equalizer step (optional based on filter state)
         auto equalizerStep = new EqualizerStep(
@@ -517,7 +515,7 @@ void TxRxThread::initializePipeline_()
             &g_rxUserdata->sbqSpkOutTreble,
             &g_rxUserdata->sbqSpkOutVol,
             g_rxUserdata->spkEqLock);
-        pipeline_->appendPipelineStep(equalizerStep);
+        activeRxPipeline->appendPipelineStep(equalizerStep);
 
         // Record from decoder step (optional)
         auto recordDecoderStep = new RecordStep(
@@ -539,8 +537,57 @@ void TxRxThread::initializePipeline_()
             recordDecoderTap,
             bypassRecordDecoder
         );
-        pipeline_->appendPipelineStep(eitherOrRecordDecoder);
+        activeRxPipeline->appendPipelineStep(eitherOrRecordDecoder);
+
+        auto activeRxMutePipeline = new AudioPipeline(inputSampleRate_, outputSampleRate_);
+        auto activeRxMuteStep = new MuteStep(inputSampleRate_, outputSampleRate_);
+        activeRxMutePipeline->appendPipelineStep(activeRxMuteStep);
+
+        // TOT beep step: emits a warning beep during countdown
+        auto totBeepBypass = new AudioPipeline(inputSampleRate_, outputSampleRate_);
+        auto totBeepMuteStep = new MuteStep(inputSampleRate_, outputSampleRate_);
+        totBeepBypass->appendPipelineStep(totBeepMuteStep);
+
+        auto totBeepActivePath = new AudioPipeline(inputSampleRate_, outputSampleRate_);
+        auto totBeepPlayback = new BeepStep(
+            outputSampleRate_, 750, 80, 5, 
+            +[]() FREEDV_NONBLOCKING {
+                return g_totBeepActive.load(std::memory_order_acquire);
+            },
+            +[](BeepStep& thisStep) FREEDV_NONBLOCKING {
+                g_totBeepActive.store(false, std::memory_order_release);
+                thisStep.reset();
+            }
+        );
+        totBeepActivePath->appendPipelineStep(totBeepPlayback);
+        auto totBeepEitherOr = new EitherOrStep(
+            +[]() FREEDV_NONBLOCKING {
+                return g_totBeepActive.load(std::memory_order_acquire);
+            },
+            totBeepActivePath,
+            totBeepBypass
+        );
+
+        auto activeRxEitherOr = new EitherOrStep(
+            +[]() FREEDV_NONBLOCKING {
+                bool tmpTx = g_tx.load(std::memory_order_acquire);
+                bool tmpVkTx = g_voice_keyer_tx.load(std::memory_order_acquire);
+                bool tmpHalfDuplex = g_half_duplex.load(std::memory_order_acquire);
+                return
+                    (tmpVkTx && NonblockingWxGetApp().appConfiguration.monitorVoiceKeyerAudio.getWithoutProcessing()) ||
+                    (tmpTx && NonblockingWxGetApp().appConfiguration.monitorTxAudio.getWithoutProcessing()) ||
+                    (!tmpVkTx && ((tmpHalfDuplex && !tmpTx) || !tmpHalfDuplex));
+            },
+            activeRxPipeline,
+            activeRxMutePipeline
+        );
         
+        auto totMixStep = new MixStep(
+            activeRxEitherOr,
+            totBeepEitherOr
+        );
+        pipeline_->appendPipelineStep(totMixStep);
+       
         // Clear anything in the FIFO before resuming decode.
         clearFifos_();
     }
@@ -668,7 +715,7 @@ void TxRxThread::clearFifos_() FREEDV_NONBLOCKING
 {
     paCallBackData  *cbData = g_rxUserdata;
     
-    if (equalizedMicAudioLink_ != nullptr && !g_tx.load(std::memory_order_acquire))
+    if (equalizedMicAudioLink_ != nullptr)
     {
         equalizedMicAudioLink_->clearFifo();
     }
@@ -684,11 +731,6 @@ void TxRxThread::clearFifos_() FREEDV_NONBLOCKING
 
         auto outFifo = (g_nSoundCards == 1) ? cbData->outfifo1 : cbData->outfifo2;
         outFifo->reset();
-    }
-
-    if (equalizedMicAudioLink_)
-    {
-        equalizedMicAudioLink_->getFifo().reset();
     }
 }
 
@@ -718,6 +760,9 @@ void TxRxThread::txProcessing_(IRealtimeHelper* helper) FREEDV_NONBLOCKING
             deferReset_ = false;
             pipeline_->reset();
             clearFifos_();
+
+            // return out and begin processing on the next loop
+            return;
         }
 
         // This while loop locks the modulator to the sample rate of
@@ -812,7 +857,12 @@ void TxRxThread::txProcessing_(IRealtimeHelper* helper) FREEDV_NONBLOCKING
             
             if (outputSamples != nullptr)
             {
-                cbData->outfifo1->write(outputSamples, nout);
+                if (cbData->outfifo1->write(outputSamples, nout) != 0)
+                {
+                    FREEDV_BEGIN_VERIFIED_SAFE
+                    log_warn("TX outfifo1 full, dropped %d samples (free=%d)", nout, cbData->outfifo1->numFree());
+                    FREEDV_END_VERIFIED_SAFE
+                }
             }
             
 #if defined(ENABLE_PROCESSING_STATS)
@@ -854,24 +904,11 @@ void TxRxThread::rxProcessing_(IRealtimeHelper* helper) FREEDV_NONBLOCKING
 
     int             nout;
 
-
-    bool tmpTx = g_tx.load(std::memory_order_acquire);
-    bool tmpVkTx = g_voice_keyer_tx.load(std::memory_order_acquire);
-    bool tmpHalfDuplex = g_half_duplex.load(std::memory_order_acquire);
-    bool processInputFifo = 
-        (tmpVkTx && NonblockingWxGetApp().appConfiguration.monitorVoiceKeyerAudio.getWithoutProcessing()) ||
-        (tmpTx && NonblockingWxGetApp().appConfiguration.monitorTxAudio.getWithoutProcessing()) ||
-        (!tmpVkTx && ((tmpHalfDuplex && !tmpTx) || !tmpHalfDuplex));
-    if (!processInputFifo)
-    {
-        clearFifos_();
-    }
-
     int nsam_one_speech_frame = (freedvInterface.getRxNumSpeechSamples() * outputSampleRate_) / freedvInterface.getRxSpeechSampleRate();
     auto outFifo = (g_nSoundCards == 1) ? cbData->outfifo1 : cbData->outfifo2;
 
     // while we have enough input samples available and enough space in the output FIFO ... 
-    while (!helper->mustStopWork() && processInputFifo && outFifo->numFree() >= nsam_one_speech_frame && cbData->infifo1->read(inputSamples_.get(), nsam) == 0) {
+    while (!helper->mustStopWork() && outFifo->numFree() >= nsam_one_speech_frame && cbData->infifo1->read(inputSamples_.get(), nsam) == 0) {
         
 #if defined(ENABLE_PROCESSING_STATS)
         startTimer_();
@@ -884,17 +921,14 @@ void TxRxThread::rxProcessing_(IRealtimeHelper* helper) FREEDV_NONBLOCKING
         
         if (nout > 0 && outputSamples != nullptr)
         {
-            outFifo->write(outputSamples, nout);
+            if (outFifo->write(outputSamples, nout) != 0)
+            {
+                FREEDV_BEGIN_VERIFIED_SAFE
+                log_warn("RX outFifo full, dropped %d samples (free=%d)", nout, outFifo->numFree());
+                FREEDV_END_VERIFIED_SAFE
+            }
         }
-        
-        tmpTx = g_tx.load(std::memory_order_acquire);
-        tmpVkTx = g_voice_keyer_tx.load(std::memory_order_acquire);
-        tmpHalfDuplex = g_half_duplex.load(std::memory_order_acquire);
-        processInputFifo = 
-            (tmpVkTx && NonblockingWxGetApp().appConfiguration.monitorVoiceKeyerAudio.getWithoutProcessing()) ||
-            (tmpTx && NonblockingWxGetApp().appConfiguration.monitorTxAudio.getWithoutProcessing()) ||
-            (!tmpVkTx && ((tmpHalfDuplex && !tmpTx) || !tmpHalfDuplex));
-        
+               
 #if defined(ENABLE_PROCESSING_STATS)
         endTimer_();
 #endif // defined(ENABLE_PROCESSING_STATS)

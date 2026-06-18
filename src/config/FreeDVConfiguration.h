@@ -23,6 +23,7 @@
 #define FREEDV_CONFIGURATION_H
 
 #include <inttypes.h>
+#include <wx/string.h>
 #include "WxWidgetsConfigStore.h"
 #include "ConfigurationDataElement.h"
 #include "AudioConfiguration.h"
@@ -58,6 +59,7 @@ public:
     ConfigurationDataElement<long> reporterWindowWidth;
     ConfigurationDataElement<long> reporterWindowHeight;
     ConfigurationDataElement<bool> reporterWindowVisible;
+    ConfigurationDataElement<long> msgEditDialogWidth;
     ConfigurationDataElement<int> reporterWindowCurrentSort;
     ConfigurationDataElement<bool> reporterWindowCurrentSortDirection;
     
@@ -69,12 +71,15 @@ public:
     ConfigurationDataElement<int> fifoSizeMs;
     ConfigurationDataElement<int> transmitLevel;
     ConfigurationDataElement<int> tuneLevel;
+    ConfigurationDataElement<std::map<wxString, int>> txAttenByBand;
+    ConfigurationDataElement<std::map<wxString, int>> tuneAttenByBand;
     
     ConfigurationDataElement<wxString> playFileToMicInPath;
     ConfigurationDataElement<wxString> playFileFromRadioPath;
     
     ConfigurationDataElement<bool> enableSpaceBarForPTT;
-    
+    ConfigurationDataElement<int> pttKeyCode;
+
     ConfigurationDataElement<wxString> voiceKeyerWaveFilePath;
     ConfigurationDataElement<wxString> voiceKeyerWaveFile;
     ConfigurationDataElement<int> voiceKeyerRxPause;

@@ -63,6 +63,12 @@ void WASAPIAudioEngine::start()
     auto prom = std::make_shared<std::promise<void> >();
     auto fut = prom->get_future();
     enqueue_([&]() {
+        // Prevent sleep while audio is in use
+        SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED);
+
+        // Request highest resolution timers
+        timeBeginPeriod(1);
+
         // Get device enumerator
         HRESULT hr = CoCreateInstance(
            CLSID_MMDeviceEnumerator, NULL,
@@ -125,6 +131,12 @@ void WASAPIAudioEngine::stop()
     auto prom = std::make_shared<std::promise<void> >();
     auto fut = prom->get_future();
     enqueue_([&]() {
+        // Regular sleep behavior can resume
+        SetThreadExecutionState(ES_CONTINUOUS);
+
+        // No longer need high resolution timing
+        timeEndPeriod(1);
+
         devEnumerator_ = nullptr;
         inputDeviceList_ = nullptr;
         outputDeviceList_ = nullptr;
@@ -151,7 +163,7 @@ std::vector<AudioDeviceSpecification> WASAPIAudioEngine::getAudioDeviceList(Audi
             prom->set_value(cachedInputDeviceList_);
             return;
         }
-        else if (cachedOutputDeviceList_.size() > 0)
+        else if (direction == AudioDirection::AUDIO_ENGINE_OUT && cachedOutputDeviceList_.size() > 0)
         {
             prom->set_value(cachedOutputDeviceList_);
             return;
@@ -283,7 +295,7 @@ std::shared_ptr<IAudioDevice> WASAPIAudioEngine::getAudioDevice(wxString deviceN
                 log_info("Creating WASAPIAudioDevice for device %s (ID %d, direction = %d, sample rate = %d, number of channels = %d)", (const char*)deviceName.ToUTF8(), (int)dev.deviceId, (int)direction, sampleRate, numChannels);
 
                 ComPtr<IMMDevice> device = nullptr;
-                ComPtr<IAudioClient> client = nullptr;
+                ComPtr<IAudioClient3> client = nullptr;
 
                 HRESULT hr = coll->Item(dev.deviceId, device.GetAddressOf());
                 if (FAILED(hr))
@@ -299,7 +311,7 @@ std::shared_ptr<IAudioDevice> WASAPIAudioEngine::getAudioDevice(wxString deviceN
                 }
 
                 hr = device->Activate(
-                    IID_IAudioClient, CLSCTX_ALL,
+                    IID_IAudioClient3, CLSCTX_ALL,
                     nullptr, (void**)client.GetAddressOf()); 
                 if (FAILED(hr))
                 {
@@ -461,8 +473,8 @@ AudioDeviceSpecification WASAPIAudioEngine::getDeviceSpecification_(ComPtr<IMMDe
     }
 
     // Activate IAudioClient so we can obtain format info
-    ComPtr<IAudioClient> audioClient = nullptr;
-    hr = device->Activate(IID_IAudioClient, CLSCTX_ALL, nullptr, (void**)audioClient.GetAddressOf());
+    ComPtr<IAudioClient3> audioClient = nullptr;
+    hr = device->Activate(IID_IAudioClient3, CLSCTX_ALL, nullptr, (void**)audioClient.GetAddressOf());
     if (FAILED(hr))
     {
         std::stringstream ss;

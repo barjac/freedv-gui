@@ -70,7 +70,11 @@ public:
     ConfigurationDataElement<bool> udpReportingEnabled;
     ConfigurationDataElement<wxString> udpReportingHostname;
     ConfigurationDataElement<int> udpReportingPort;
-    
+
+    ConfigurationDataElement<bool> udpBroadcastEnabled;
+    ConfigurationDataElement<wxString> udpBroadcastAddress;
+    ConfigurationDataElement<int> udpBroadcastPort;
+
     ConfigurationDataElement<bool> useUTCForReporting;
     
     ConfigurationDataElement<std::vector<wxString> > reportingFrequencyList;
@@ -84,7 +88,9 @@ public:
     
     ConfigurationDataElement<bool> reportingFrequencyAsKhz;
     ConfigurationDataElement<bool> reportingDirectionAsCardinal;
-    
+
+    ConfigurationDataElement<wxString> csvLogFilePath;
+
     virtual void load(wxConfigBase* config) override;
     virtual void save(wxConfigBase* config) override;
 };

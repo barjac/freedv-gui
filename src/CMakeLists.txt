@@ -20,10 +20,6 @@ set(FREEDV_LINK_LIBS_OSX
 add_definitions(-DULOG_HAVE_TIME)
 add_definitions(-DULOG_NO_COLOR)
 
-# Include third party headers and components
-include_directories(3rdparty)
-add_subdirectory(3rdparty)
-
 # Include generated headers
 include_directories(${CMAKE_BINARY_DIR}/generated)
 
@@ -32,17 +28,9 @@ add_subdirectory(audio)
 add_subdirectory(config)
 add_subdirectory(gui)
 add_subdirectory(logging)
-add_subdirectory(os)
 add_subdirectory(pipeline)
-add_subdirectory(reporting)
 add_subdirectory(rig_control)
 add_subdirectory(sox)
-add_subdirectory(util)
-
-# Compile FreeDV rig integrations
-if((LINUX OR APPLE) AND (NOT SANITIZERS_ENABLED))
-add_subdirectory(integrations)
-endif((LINUX OR APPLE) AND (NOT SANITIZERS_ENABLED))
 
 # WIN32 is needed for Windows GUI apps and is ignored for UNIX like systems.
 # In addition, there are some required OSX-specific code files for platform specific handling.
@@ -67,10 +55,10 @@ endif(APPLE)
 
 if(APPLE)
 target_compile_options(FreeDV PRIVATE ${WARNINGS_AS_ERRORS_FLAGS})
-target_link_libraries(FreeDV fdv_audio fdv_audio_pipeline fdv_config fdv_gui_controls fdv_gui_dialogs fdv_gui_util fdv_logging fdv_os_wrapper fdv_rig_control fdv_reporting fdv_sox fdv_util codec2 rade opus git_version)
+target_link_libraries(FreeDV fdv_audio fdv_audio_pipeline fdv_audio_pipeline_extra fdv_config fdv_gui_controls fdv_gui_dialogs fdv_gui_util fdv_logging fdv_os_wrapper fdv_rig_control fdv_reporting fdv_sox fdv_util codec2 git_version)
 else(APPLE)
 target_compile_options(freedv PRIVATE ${WARNINGS_AS_ERRORS_FLAGS})
-target_link_libraries(freedv fdv_audio fdv_audio_pipeline fdv_config fdv_gui_controls fdv_gui_dialogs fdv_gui_util fdv_logging fdv_os_wrapper fdv_rig_control fdv_reporting fdv_sox fdv_util codec2 rade opus git_version)
+target_link_libraries(freedv fdv_audio fdv_audio_pipeline fdv_audio_pipeline_extra fdv_config fdv_gui_controls fdv_gui_dialogs fdv_gui_util fdv_logging fdv_os_wrapper fdv_rig_control fdv_reporting fdv_sox fdv_util codec2 git_version)
 endif(APPLE)
 
 # Add dependencies for other statically built libraries, if applicable.
@@ -81,7 +69,7 @@ if(FREEDV_STATIC_DEPS)
     add_dependencies(freedv ${FREEDV_STATIC_DEPS})
     endif(APPLE)
     add_dependencies(fdv_audio ${FREEDV_STATIC_DEPS})
-    add_dependencies(fdv_audio_pipeline ${FREEDV_STATIC_DEPS})
+    add_dependencies(fdv_audio_pipeline_extra ${FREEDV_STATIC_DEPS})
     add_dependencies(fdv_sox ${FREEDV_STATIC_DEPS})
 endif(FREEDV_STATIC_DEPS)
 
@@ -161,7 +149,7 @@ if(APPLE)
         TARGET FreeDV
         POST_BUILD
         COMMAND rm -rf dist_tmp FreeDV.dmg || true
-        COMMAND DYLD_LIBRARY_PATH=${CODEC2_BUILD_DIR}/src:${portaudio_BINARY_DIR}:${samplerate_BINARY_DIR}/src:${DYLD_LIBRARY_PATH} ${CMAKE_SOURCE_DIR}/macdylibbundler/dylibbundler ARGS -od -b -x FreeDV.app/Contents/MacOS/FreeDV -d FreeDV.app/Contents/libs -p @loader_path/../libs/ -i /usr/lib -s ${CODEC2_BUILD_DIR}/src -s ${CMAKE_BINARY_DIR}/codec2_build/src ${PORTAUDIO_BUNDLE_ARG} -s ${samplerate_BINARY_DIR}/src -s ${rade_BINARY_DIR}/src -s `dirname ${CLANG_SANITIZER_FILE}` -ns
+        COMMAND DYLD_LIBRARY_PATH=${CODEC2_BUILD_DIR}/src:${portaudio_BINARY_DIR}:${DYLD_LIBRARY_PATH} ${CMAKE_SOURCE_DIR}/macdylibbundler/dylibbundler ARGS -od -b -x FreeDV.app/Contents/MacOS/FreeDV -d FreeDV.app/Contents/libs -p @loader_path/../libs/ -i /usr/lib -s ${CODEC2_BUILD_DIR}/src -s ${CMAKE_BINARY_DIR}/codec2_build/src ${PORTAUDIO_BUNDLE_ARG} -s ${rade_BINARY_DIR}/src -s `dirname ${CLANG_SANITIZER_FILE}` -ns
         COMMAND cp ARGS ${CMAKE_CURRENT_SOURCE_DIR}/freedv.icns FreeDV.app/Contents/Resources
         COMMAND rm ARGS -rf FreeDV.app/Contents/Frameworks
         COMMAND mkdir ARGS FreeDV.app/Contents/Frameworks
@@ -188,11 +176,23 @@ endif(APPLE)
 # Custom commands for signing Windows binaries
 if(SIGN_WINDOWS_BINARIES)
     # Add custom command to sign freedv.exe.
-    add_custom_command(
-        TARGET freedv 
-        POST_BUILD
-        COMMAND mv $<TARGET_FILE:freedv> $<TARGET_FILE:freedv>.tmp
-        COMMAND ${OSSLSIGNCODE_BIN} ARGS sign -pkcs11engine ${PKCS11_ENGINE} -pkcs11module ${PKCS11_MODULE} -pkcs11cert "${PKCS11_CERTIFICATE}" -key "${PKCS11_KEY}" -h ${SIGN_HASH} -ts ${TIMESTAMP_SERVER} -comm -ac ${INTERMEDIATE_CERT_FILE} -n "FreeDV - ${PROJECT_DESCRIPTION}" -i "https://freedv.org/" -in $<TARGET_FILE:freedv>.tmp -out $<TARGET_FILE:freedv>
-        COMMAND rm $<TARGET_FILE:freedv>.tmp
-        VERBATIM)
+    if (PKCS11_SECONDARY_CERTIFICATE)
+        add_custom_command(
+            TARGET freedv 
+            POST_BUILD
+            COMMAND mv $<TARGET_FILE:freedv> $<TARGET_FILE:freedv>.tmp
+            COMMAND ${OSSLSIGNCODE_BIN} ARGS sign -pkcs11engine ${PKCS11_ENGINE} -pkcs11module ${PKCS11_MODULE} -pkcs11cert "${PKCS11_CERTIFICATE}" -key "${PKCS11_KEY}" -h ${SIGN_HASH} -ts ${TIMESTAMP_SERVER} -comm -ac ${INTERMEDIATE_CERT_FILE} -n "FreeDV - ${PROJECT_DESCRIPTION}" -i "https://freedv.org/" -in $<TARGET_FILE:freedv>.tmp -out $<TARGET_FILE:freedv>
+            COMMAND mv $<TARGET_FILE:freedv> $<TARGET_FILE:freedv>.tmp
+            COMMAND ${OSSLSIGNCODE_BIN} ARGS sign -nest -pkcs11engine ${PKCS11_ENGINE} -pkcs11module ${PKCS11_MODULE} -pkcs11cert "${PKCS11_SECONDARY_CERTIFICATE}" -key "${PKCS11_SECONDARY_KEY}" -h ${SIGN_HASH} -ts ${TIMESTAMP_SERVER} -comm -ac ${INTERMEDIATE_CERT_FILE} -n "FreeDV - ${PROJECT_DESCRIPTION}" -i "https://freedv.org/" -in $<TARGET_FILE:freedv>.tmp -out $<TARGET_FILE:freedv>
+            COMMAND rm $<TARGET_FILE:freedv>.tmp
+            VERBATIM)
+    else()
+        add_custom_command(
+            TARGET freedv 
+            POST_BUILD
+            COMMAND mv $<TARGET_FILE:freedv> $<TARGET_FILE:freedv>.tmp
+            COMMAND ${OSSLSIGNCODE_BIN} ARGS sign -pkcs11engine ${PKCS11_ENGINE} -pkcs11module ${PKCS11_MODULE} -pkcs11cert "${PKCS11_CERTIFICATE}" -key "${PKCS11_KEY}" -h ${SIGN_HASH} -ts ${TIMESTAMP_SERVER} -comm -ac ${INTERMEDIATE_CERT_FILE} -n "FreeDV - ${PROJECT_DESCRIPTION}" -i "https://freedv.org/" -in $<TARGET_FILE:freedv>.tmp -out $<TARGET_FILE:freedv>
+            COMMAND rm $<TARGET_FILE:freedv>.tmp
+            VERBATIM)
+    endif (PKCS11_SECONDARY_CERTIFICATE)
 endif(SIGN_WINDOWS_BINARIES)

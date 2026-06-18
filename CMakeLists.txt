@@ -15,7 +15,7 @@ endif()
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum OS X deployment version")
 
 set(PROJECT_NAME FreeDV)
-set(PROJECT_VERSION 2.3.0)
+set(PROJECT_VERSION 2.4.0)
 set(PROJECT_DESCRIPTION "HF Digital Voice for Radio Amateurs")
 set(PROJECT_HOMEPAGE_URL "https://freedv.org")
 
@@ -131,8 +131,6 @@ set(USE_STATIC_PORTAUDIO FALSE CACHE BOOL
     "Download and build static portaudio instead of the system library.")
 set(USE_STATIC_SNDFILE FALSE CACHE BOOL
     "Download and build static sndfile instead of the system library.")
-set(USE_STATIC_SAMPLERATE FALSE CACHE BOOL
-    "Download and build static samplerate instead of the system library.")
 set(USE_STATIC_SPEEXDSP FALSE CACHE BOOL
     "Download and build static speex instead of the system library.")
 set(BOOTSTRAP_WXWIDGETS FALSE CACHE BOOL
@@ -252,12 +250,22 @@ if(SIGN_WINDOWS_BINARIES)
     file(READ ${PKCS11_CERTIFICATE_FILE} PKCS11_CERTIFICATE_TMP)
     string(REPLACE "\n" "" PKCS11_KEY "${PKCS11_KEY_TMP}")
     string(REPLACE "\n" "" PKCS11_CERTIFICATE "${PKCS11_CERTIFICATE_TMP}")
+
+    if (DEFINED PKCS11_SECONDARY_KEY_FILE)
+        file(READ ${PKCS11_SECONDARY_KEY_FILE} PKCS11_SECONDARY_KEY_TMP)
+        string(REPLACE "\n" "" PKCS11_SECONDARY_KEY "${PKCS11_SECONDARY_KEY_TMP}")
+    endif (DEFINED PKCS11_SECONDARY_KEY_FILE)
+ 
+    if (DEFINED PKCS11_SECONDARY_CERTIFICATE_FILE)
+        file(READ ${PKCS11_SECONDARY_CERTIFICATE_FILE} PKCS11_SECONDARY_CERTIFICATE_TMP)
+        string(REPLACE "\n" "" PKCS11_SECONDARY_CERTIFICATE "${PKCS11_SECONDARY_CERTIFICATE_TMP}")
+    endif (DEFINED PKCS11_SECONDARY_CERTIFICATE_FILE)
+ 
 endif(SIGN_WINDOWS_BINARIES)
 
 if(USE_STATIC_DEPS)
     set(USE_STATIC_PORTAUDIO TRUE FORCE)
     set(USE_STATIC_SNDFILE TRUE FORCE)
-    set(USE_STATIC_SAMPLERATE TRUE FORCE)
     set(USE_STATIC_SPEEXDSP TRUE FORCE)
 endif(USE_STATIC_DEPS)
 
@@ -268,9 +276,9 @@ endif(USE_STATIC_DEPS)
 if (LINUX)
     message(STATUS "Looking for DBus...")
     find_package(DBus)
-    if (DBUS_FOUND)
+    if (DBus_FOUND)
         message(STATUS "Found DBus, will attempt to use rtkit for real-time threading")
-    endif (DBUS_FOUND)
+    endif (DBus_FOUND)
 endif (LINUX)
 
 #
@@ -398,38 +406,14 @@ find_package(Threads REQUIRED)
 message(STATUS "Threads library flags: ${CMAKE_THREAD_LIBS_INIT}")
 
 #
-# Build RADE. 
-# (TBD - allow override with own build, similar to Codec2)
-include(cmake/BuildRADE.cmake)
-
-#
-# Build RNNoise
-# (TBD - allow override with own build)
-include(cmake/BuildRNNoise.cmake)
+# Build freedv-backend
+# 
+include(cmake/BuildFreeDVBackend.cmake)
 
 #
 # Build codec2
 #
 include(cmake/BuildCodec2.cmake)
-
-# Look for libebur128 (loudness measurement)
-if(NOT USE_STATIC_EBUR128)
-    message(STATUS "Looking for ebur128...")
-    find_library(LIBEBUR128 ebur128)
-    find_path(LIBEBUR128_INCLUDE_DIR ebur128.h)
-    message(STATUS "  ebur128 library: ${LIBEBUR128}")
-    message(STATUS "  ebur128 headers: ${LIBEBUR128_INCLUDE_DIR}")
-    if(LIBEBUR128 AND LIBEBUR128_INCLUDE_DIR)
-        list(APPEND FREEDV_LINK_LIBS ${LIBEBUR128})
-        include_directories(${LIBEBUR128_INCLUDE_DIR})
-    else(LIBEBUR128 AND LIBEBUR128_INCLUDE_DIR)
-        message(STATUS "Will attempt static build of ebur128.")
-        include(cmake/BuildEbur128.cmake)
-    endif(LIBEBUR128 AND LIBEBUR128_INCLUDE_DIR)
-else(NOT USE_STATIC_LIBEBUR128)
-    message(STATUS "Will attempt static build of ebur128.")
-    include(cmake/BuildEbur128.cmake)
-endif(NOT USE_STATIC_EBUR128)
 
 if (NOT USE_NATIVE_AUDIO AND LINUX)
     message(WARNING "Use of PortAudio on Linux has been deprecated and may be explicitly disallowed in a future release. It is highly recommended that you use FreeDV's built-in PulseAudio support instead as this generally gives better results, especially on distributions that now use pipewire for audio.")
@@ -547,25 +531,7 @@ else(HAMLIB_LIBRARY AND HAMLIB_INCLUDE_DIR)
     include(cmake/BuildHamlib.cmake)
 endif(HAMLIB_LIBRARY AND HAMLIB_INCLUDE_DIR)
 
-# Samplerate Library
-#
-if(NOT USE_STATIC_SAMPLERATE)
-    message(STATUS "Looking for samplerate...")
-    find_library(LIBSAMPLERATE samplerate)
-    find_path(LIBSAMPLERATE_INCLUDE_DIR samplerate.h)
-    message(STATUS "  samplerate library: ${LIBSAMPLERATE}")
-    message(STATUS "  samplerate headers: ${LIBSAMPLERATE_INCLUDE_DIR}")
-    if(LIBSAMPLERATE AND LIBSAMPLERATE_INCLUDE_DIR)
-        list(APPEND FREEDV_LINK_LIBS ${LIBSAMPLERATE})
-        include_directories(${LIBSAMPLERATE_INCLUDE_DIR})
-    else(LIBSTAMPLERATE AND LIBSAMPLERATE_INCLUDE_DIR)
-        message(STATUS "Will attempt static build of samplerate.")
-        include(cmake/BuildSamplerate.cmake)
-    endif(LIBSAMPLERATE AND LIBSAMPLERATE_INCLUDE_DIR)
-else(NOT USE_STATIC_SAMPLERATE)
-    message(STATUS "Will attempt static build of samplerate.")
-    include(cmake/BuildSamplerate.cmake)
-endif(NOT USE_STATIC_SAMPLERATE)
+# r8brain-free-src (header-only, bundled in src/3rdparty/r8brain)
 
 #
 # sndfile Library
@@ -759,6 +725,10 @@ VIAddVersionKey \\\"GitHash\\\" \\\"${GIT_HASH}\\\"
         # Add finalize command for NSIS so the installer/uninstaller can be
         # signed too.
         set(CPACK_NSIS_FINALIZE_CMD "mv %1 %1.tmp; ${OSSLSIGNCODE_BIN} sign -pkcs11engine ${PKCS11_ENGINE} -pkcs11module ${PKCS11_MODULE} -pkcs11cert \\\"${PKCS11_CERTIFICATE}\\\" -key \\\"${PKCS11_KEY}\\\" -h ${SIGN_HASH} -comm -ts ${TIMESTAMP_SERVER} -ac ${INTERMEDIATE_CERT_FILE} -n \\\"FreeDV - ${PROJECT_DESCRIPTION}\\\" -i \\\"https://freedv.org/\\\" -in %1.tmp -out %1")
+        if (PKCS11_SECONDARY_CERTIFICATE)
+            set(CPACK_NSIS_FINALIZE_CMD "${CPACK_NSIS_FINALIZE_CMD}; mv %1 %1.tmp; ${OSSLSIGNCODE_BIN} sign -nest -pkcs11engine ${PKCS11_ENGINE} -pkcs11module ${PKCS11_MODULE} -pkcs11cert \\\"${PKCS11_SECONDARY_CERTIFICATE}\\\" -key \\\"${PKCS11_SECONDARY_KEY}\\\" -h ${SIGN_HASH} -comm -ts ${TIMESTAMP_SERVER} -ac ${INTERMEDIATE_CERT_FILE} -n \\\"FreeDV - ${PROJECT_DESCRIPTION}\\\" -i \\\"https://freedv.org/\\\" -in %1.tmp -out %1")
+        endif (PKCS11_SECONDARY_CERTIFICATE)
+        message(STATUS "Windows installer finalize command: ${CPACK_NSIS_FINALIZE_CMD}")
     endif(SIGN_WINDOWS_BINARIES)
 
     include(CPack)
@@ -767,9 +737,9 @@ elseif(UNIX AND NOT APPLE)
     SET(CPACK_GENERATOR "DEB")
     SET(CPACK_DEBIAN_PACKAGE_MAINTAINER "Mooneer Salem <mooneer@gmail.com>") #required
     if(USE_NATIVE_AUDIO)
-    SET(CPACK_DEBIAN_PACKAGE_DEPENDS "codec2 (>= 1.1.1), libspeexdsp1 (>= 1.2~rc1.2-1+b2), libsamplerate0 (>= 0.1.9-2), libwxgtk3.0-gtk3-0v5  (>= 3.0.4+dfsg-3), libpulse0 (>= 14.2-2), libhamlib2 (>= 3.3-10build1), libasound2 (>= 1.1.8-1), libao4 (>= 1.2.2+20180113-1), libgsm1 (>= 1.0.18-2), libsndfile1 (>= 1.0.28-6)")
+    SET(CPACK_DEBIAN_PACKAGE_DEPENDS "codec2 (>= 1.1.1), libspeexdsp1 (>= 1.2~rc1.2-1+b2), libwxgtk3.0-gtk3-0v5  (>= 3.0.4+dfsg-3), libpulse0 (>= 14.2-2), libhamlib2 (>= 3.3-10build1), libasound2 (>= 1.1.8-1), libao4 (>= 1.2.2+20180113-1), libgsm1 (>= 1.0.18-2), libsndfile1 (>= 1.0.28-6)")
     else(USE_NATIVE_AUDIO)
-    SET(CPACK_DEBIAN_PACKAGE_DEPENDS "codec2 (>= 1.1.1), libspeexdsp1 (>= 1.2~rc1.2-1+b2), libsamplerate0 (>= 0.1.9-2), libwxgtk3.0-gtk3-0v5  (>= 3.0.4+dfsg-3), libportaudio2 (>= 19.6.0-1build1), libhamlib2 (>= 3.3-10build1), libasound2 (>= 1.1.8-1), libao4 (>= 1.2.2+20180113-1), libgsm1 (>= 1.0.18-2), libsndfile1 (>= 1.0.28-6)")
+    SET(CPACK_DEBIAN_PACKAGE_DEPENDS "codec2 (>= 1.1.1), libspeexdsp1 (>= 1.2~rc1.2-1+b2), libwxgtk3.0-gtk3-0v5  (>= 3.0.4+dfsg-3), libportaudio2 (>= 19.6.0-1build1), libhamlib2 (>= 3.3-10build1), libasound2 (>= 1.1.8-1), libao4 (>= 1.2.2+20180113-1), libgsm1 (>= 1.0.18-2), libsndfile1 (>= 1.0.28-6)")
     endif(USE_NATIVE_AUDIO)
 
     SET(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)

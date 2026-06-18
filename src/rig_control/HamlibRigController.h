@@ -28,7 +28,7 @@
 #include <mutex>
 #include <atomic>
 
-#include "util/ThreadedObject.h"
+#include "ThreadedObject.h"
 #include "IRigFrequencyController.h"
 #include "IRigPttController.h"
 
@@ -49,8 +49,8 @@ public:
         PTT_VIA_CAT_DATA,
     };
     
-    HamlibRigController(std::string rigName, std::string serialPort, const int serialRate, const int civHex = 0, const PttType pttType = PTT_VIA_CAT, std::string pttSerialPort = std::string(), bool restoreFreqModeOnDisconnect = false, bool freqOnly = false);
-    HamlibRigController(int rigIndex, std::string serialPort, const int serialRate, const int civHex = 0, const PttType pttType = PTT_VIA_CAT, std::string pttSerialPort = std::string(), bool restoreFreqModeOnDisconnect = false, bool freqOnly = false);
+    HamlibRigController(std::string rigName, std::string serialPort, const int serialRate, const int civHex, const PttType pttType, std::string pttSerialPort, bool restoreFreqModeOnDisconnect, bool freqOnly, bool forceRtsOn, bool forceDtrOn);
+    HamlibRigController(int rigIndex, std::string serialPort, const int serialRate, const int civHex, const PttType pttType, std::string pttSerialPort, bool restoreFreqModeOnDisconnect, bool freqOnly, bool forceRtsOn, bool forceDtrOn);
     virtual ~HamlibRigController();
     
     virtual void connect() override;
@@ -80,12 +80,15 @@ private:
     const int civHex_;
     const PttType pttType_;
     std::string pttSerialPort_;
-    
+    const bool forceRtsOn_;
+    const bool forceDtrOn_;
+
     std::atomic<RIG*> rig_;
     bool multipleVfos_;
     bool pttSet_;
     uint64_t currFreq_;
     rmode_t currMode_;
+    IRigFrequencyController::Mode pendingMode_;
     bool restoreOnDisconnect_;
     uint64_t origFreq_;
     rmode_t origMode_;
@@ -93,10 +96,19 @@ private:
     bool destroying_;
     
     int rigResponseTime_;
-    
+  
     // Tracks errors encountered during/after rig_open() so that
     // we only display the error box once.
     bool errorEncountered_;
+
+    // Number of frequency/mode retrieval errors seen.
+    // This is so that we have a bit of leeway before showing the error
+    // box, as errors can sometimes be emitted yet no problems exist
+    // (example: rapidly spinning the dial on the radio side)
+    int getFreqModeErrorCount_;
+
+    // 2 or more errors while retrieving freq/mode should cause the popup to appear
+    const int MAX_GET_FREQUENCY_ERR_COUNT = 1;
     
     vfo_t getCurrentVfo_();
     void setFrequencyHelper_(vfo_t currVfo, uint64_t frequencyHz);

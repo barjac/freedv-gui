@@ -143,11 +143,13 @@ class TopFrame : public wxFrame
         wxRadioButton *m_rb1600;
 
         wxSizer* rightSizer;
-        
+
         wxStaticBox* modeBox;
         wxStaticBoxSizer* sbSizer_mode;
         
         wxMenuItem* m_menuItemPlayFileFromRadio;
+        wxMenuItem* m_menuItemExportConfig;
+        wxMenuItem* m_menuItemImportConfig;
 
         wxToggleButton *m_reporterHidden;
     
@@ -176,6 +178,12 @@ class TopFrame : public wxFrame
         virtual void OnToolsComCfg( wxCommandEvent& event ) { event.Skip(); }
         virtual void OnToolsComCfgUI( wxUpdateUIEvent& event ) { event.Skip(); }
         virtual void OnPlayFileFromRadio( wxCommandEvent& event ) { event.Skip(); }
+        virtual void OnToolsExportConfig( wxCommandEvent& event ) { event.Skip(); }
+        virtual void OnToolsExportConfigUI( wxUpdateUIEvent& event ) { event.Skip(); }
+        virtual void OnToolsImportConfig( wxCommandEvent& event ) { event.Skip(); }
+        virtual void OnToolsImportConfigUI( wxUpdateUIEvent& event ) { event.Skip(); }
+        virtual void OnToolsLoadDefaultConfig( wxCommandEvent& event ) { event.Skip(); }
+        virtual void OnToolsLoadDefaultConfigUI( wxUpdateUIEvent& event ) { event.Skip(); }
 
         virtual void OnHelpCheckUpdates( wxCommandEvent& event ) { event.Skip(); }
         virtual void OnHelpCheckUpdatesUI( wxUpdateUIEvent& event ) { event.Skip(); }
@@ -218,7 +226,9 @@ class TopFrame : public wxFrame
         virtual void OnTxLevelIncr( wxCommandEvent& event ) { event.Skip(); }
         virtual void OnTxLevelIncrBig( wxCommandEvent& event ) { event.Skip(); }
         virtual void OnTxLevelMouseWheel( wxMouseEvent& event ) { event.Skip(); }
-        
+        virtual void OnTxLevelContextMenu( wxContextMenuEvent& event ) { event.Skip(); }
+        virtual void OnTuneAttenContextMenu( wxContextMenuEvent& event ) { event.Skip(); }
+
         virtual void OnChangeMicSpkrLevel( wxScrollEvent& event ) { event.Skip(); }
         
         virtual void OnChangeReportFrequency( wxCommandEvent& event ) { event.Skip(); }
@@ -241,7 +251,7 @@ class TopFrame : public wxFrame
         virtual void OnToggleReporterVisibility (wxCommandEvent& event) { event.Skip(); }
         
         virtual void OnTogBtnTune(wxCommandEvent& event) { event.Skip(); }
-        
+
         void setVoiceKeyerButtonLabel_(wxString filename);
         
     public:

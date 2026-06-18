@@ -131,7 +131,7 @@ EasySetupDialog::EasySetupDialog(wxWindow* parent, wxWindowID id, const wxString
     m_hamlibBox = new wxStaticBox(setupCatControlBox, wxID_ANY, _("Hamlib CAT Control"));
     m_hamlibBox->Hide();
     wxStaticBoxSizer* hamlibBoxSizer = new wxStaticBoxSizer(m_hamlibBox, wxVERTICAL);
-    wxGridSizer* gridSizerhl = new wxGridSizer(5, 2, 0, 0);
+    wxGridSizer* gridSizerhl = new wxGridSizer(6, 2, 0, 0);
     hamlibBoxSizer->Add(gridSizerhl);
 
     /* Hamlib Rig Type combobox. */
@@ -179,7 +179,24 @@ EasySetupDialog::EasySetupDialog(wxWindow* parent, wxWindowID id, const wxString
     m_cbPttMethod->Append(wxT("None"));
     m_cbPttMethod->Append(wxT("CAT via Data port"));
     m_cbPttMethod->SetSelection(0);
-    
+
+    /* Force RTS / Force DTR checkboxes on one row */
+    wxBoxSizer* forceRtsSizer = new wxBoxSizer(wxHORIZONTAL);
+    m_ckForceRTSOn = new wxCheckBox(m_hamlibBox, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(-1, -1), 0);
+    m_ckForceRTSOn->SetToolTip(_("Always assert RTS on the Hamlib serial port (e.g. to power a radio interface)"));
+    forceRtsSizer->Add(m_ckForceRTSOn, 0, wxALIGN_CENTER_VERTICAL, 0);
+    forceRtsSizer->Add(new wxStaticText(m_hamlibBox, wxID_ANY, _("Force RTS"), wxDefaultPosition, wxDefaultSize, 0),
+                       0, wxALIGN_CENTER_VERTICAL | wxLEFT, 5);
+    gridSizerhl->Add(forceRtsSizer, 0, wxALL | wxALIGN_CENTER_VERTICAL | wxALIGN_RIGHT, 2);
+
+    wxBoxSizer* forceDtrSizer = new wxBoxSizer(wxHORIZONTAL);
+    m_ckForceDTROn = new wxCheckBox(m_hamlibBox, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(-1, -1), 0);
+    m_ckForceDTROn->SetToolTip(_("Always assert DTR on the Hamlib serial port (e.g. to power a radio interface)"));
+    forceDtrSizer->Add(m_ckForceDTROn, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, 10);
+    forceDtrSizer->Add(new wxStaticText(m_hamlibBox, wxID_ANY, _("Force DTR"), wxDefaultPosition, wxDefaultSize, 0),
+                       0, wxALIGN_CENTER_VERTICAL | wxLEFT, 5);
+    gridSizerhl->Add(forceDtrSizer, 0, wxALL | wxALIGN_CENTER_VERTICAL, 2);
+
     setupCatControlBoxSizer->Add(hamlibBoxSizer, 0, wxALL | wxEXPAND, 2);
 
     /* Serial port box */
@@ -523,7 +540,10 @@ void EasySetupDialog::ExchangePttDeviceData(int inout)
             m_hamlibBox->Show();
             m_serialBox->Hide();
 
-            m_cbRigName->SetSelection(wxGetApp().m_intHamlibRig);
+            if (wxGetApp().m_intHamlibRig >= 0)
+            {
+                m_cbRigName->SetSelection(wxGetApp().m_intHamlibRig);
+            }
             resetIcomCIVStatus_();
             
             auto selected = m_cbRigName->GetCurrentSelection();
@@ -548,6 +568,9 @@ void EasySetupDialog::ExchangePttDeviceData(int inout)
             m_tcIcomCIVHex->SetValue(wxString::Format(wxT("%02X"), wxGetApp().appConfiguration.rigControlConfiguration.hamlibIcomCIVAddress.get()));
             
             m_cbPttMethod->SetSelection((int)wxGetApp().appConfiguration.rigControlConfiguration.hamlibPTTType);
+
+            m_ckForceRTSOn->SetValue(wxGetApp().appConfiguration.rigControlConfiguration.hamlibForceRTSOn);
+            m_ckForceDTROn->SetValue(wxGetApp().appConfiguration.rigControlConfiguration.hamlibForceDTROn);
         }
         else if (wxGetApp().appConfiguration.rigControlConfiguration.useSerialPTT)
         {
@@ -583,7 +606,7 @@ void EasySetupDialog::ExchangePttDeviceData(int inout)
         if (m_ckUseHamlibPTT->GetValue())
         {
             wxGetApp().m_intHamlibRig = m_cbRigName->GetSelection();
-            wxGetApp().appConfiguration.rigControlConfiguration.hamlibRigName = HamlibRigController::RigIndexToName(wxGetApp().m_intHamlibRig);
+            wxGetApp().appConfiguration.rigControlConfiguration.hamlibRigName = (wxGetApp().m_intHamlibRig >= 0) ? HamlibRigController::RigIndexToName(wxGetApp().m_intHamlibRig) : "";
             wxGetApp().appConfiguration.rigControlConfiguration.hamlibSerialPort = m_cbSerialPort->GetValue();
             wxGetApp().appConfiguration.rigControlConfiguration.hamlibPttSerialPort = m_cbSerialPort->GetValue();
             
@@ -603,6 +626,9 @@ void EasySetupDialog::ExchangePttDeviceData(int inout)
             log_debug("serial rate: %d", wxGetApp().appConfiguration.rigControlConfiguration.hamlibSerialRate.get());
             
             wxGetApp().appConfiguration.rigControlConfiguration.hamlibPTTType = m_cbPttMethod->GetSelection();
+
+            wxGetApp().appConfiguration.rigControlConfiguration.hamlibForceRTSOn = m_ckForceRTSOn->GetValue();
+            wxGetApp().appConfiguration.rigControlConfiguration.hamlibForceDTROn = m_ckForceDTROn->GetValue();
         }
         else if (m_ckUseSerialPTT->GetValue())
         {
@@ -675,8 +701,17 @@ void EasySetupDialog::HamlibRigNameChanged(wxCommandEvent&)
 
 void EasySetupDialog::resetIcomCIVStatus_()
 {
-    std::string rigName = m_cbRigName->GetString(m_cbRigName->GetCurrentSelection()).ToStdString();
-    if (rigName.find("Icom") == 0)
+    bool icomFound = false;
+    if (m_cbRigName->GetCurrentSelection() >= 0)
+    {
+        std::string rigName = m_cbRigName->GetString(m_cbRigName->GetCurrentSelection()).ToStdString();
+        if (rigName.find("Icom") == 0)
+        {
+            icomFound = true;
+        }
+    }
+
+    if (icomFound)
     {
         m_stIcomCIVHex->Show();
         m_tcIcomCIVHex->Show();
@@ -775,10 +810,19 @@ void EasySetupDialog::OnTest(wxCommandEvent&)
         if (m_buttonTest->GetLabel() == "Stop Test")
         {
             // Stop the currently running test
-            if (txTestAudioDevice_ != nullptr)
+            if (txTestAudioDevice_ != nullptr || analogPlaybackTestAudioDevice_ != nullptr)
             {
-                txTestAudioDevice_->stop();
-                txTestAudioDevice_ = nullptr;
+                if (txTestAudioDevice_ != nullptr)
+                {
+                    txTestAudioDevice_->stop();
+                    txTestAudioDevice_ = nullptr;
+                }
+
+                if (analogPlaybackTestAudioDevice_ != nullptr)
+                {
+                    analogPlaybackTestAudioDevice_->stop();
+                    analogPlaybackTestAudioDevice_ = nullptr;
+                }
 
                 auto audioEngine = AudioEngineFactory::GetAudioEngine();
                 audioEngine->stop();
@@ -860,8 +904,9 @@ void EasySetupDialog::OnTest(wxCommandEvent&)
                 }
                 
                 auto pttType = (HamlibRigController::PttType)m_cbPttMethod->GetSelection();
-                
-                hamlibTestObject_ = std::make_shared<HamlibRigController>(rig, (const char*)serialPort.ToUTF8(), rate, civHexAddress, pttType);
+
+                hamlibTestObject_ = std::make_shared<HamlibRigController>(rig, (const char*)serialPort.ToUTF8(), rate, civHexAddress, pttType,
+                    std::string(), false, false, m_ckForceRTSOn->GetValue(), m_ckForceDTROn->GetValue());
                 hamlibTestObject_->onRigError += [this](IRigController*, std::string error) {
                     CallAfter([this, error = std::move(error)]() {
                         wxMessageBox(
@@ -915,53 +960,87 @@ void EasySetupDialog::OnTest(wxCommandEvent&)
                 serialPortTestObject_->connect();      
             }
         
-            // Start playing a sine wave through the radio's device
-            if (radioOutDeviceName != "none")
+            // Get analog playback device info
+            int analogIndex = m_analogDevicePlayback->GetSelection();
+            SoundDeviceData* analogPlaybackData = (SoundDeviceData*)m_analogDevicePlayback->GetClientObject(analogIndex);
+            wxString analogOutDeviceName = (analogPlaybackData != nullptr) ? analogPlaybackData->rxDeviceName : wxString("none");
+            int analogOutSampleRate = (analogPlaybackData != nullptr) ? analogPlaybackData->rxSampleRate : 44100;
+
+            // Start playing sine waves through the radio and analog playback devices
+            if (radioOutDeviceName != "none" || analogOutDeviceName != "none")
             {
                 auto audioEngine = AudioEngineFactory::GetAudioEngine();
                 audioEngine->start();
 
-                txTestAudioDevice_ = audioEngine->getAudioDevice(radioOutDeviceName, IAudioEngine::AUDIO_ENGINE_OUT, radioOutSampleRate, 1);
-
-                if (txTestAudioDevice_ == nullptr)
+                if (radioOutDeviceName != "none")
                 {
-                    wxMessageBox(
-                        "Error opening radio sound device. Please double-check configuration and try again.", 
-                        wxT("Error"), wxOK | wxICON_ERROR, this);
-                    
-                    if (hamlibTestObject_ != nullptr)
+                    txTestAudioDevice_ = audioEngine->getAudioDevice(radioOutDeviceName, IAudioEngine::AUDIO_ENGINE_OUT, radioOutSampleRate, 1);
+
+                    if (txTestAudioDevice_ == nullptr)
                     {
-                        hamlibTestObject_->ptt(false);
-                        hamlibTestObject_->disconnect();
-                        hamlibTestObject_ = nullptr;
+                        wxMessageBox(
+                            "Error opening radio sound device. Please double-check configuration and try again.",
+                            wxT("Error"), wxOK | wxICON_ERROR, this);
+
+                        if (hamlibTestObject_ != nullptr)
+                        {
+                            hamlibTestObject_->ptt(false);
+                            hamlibTestObject_->disconnect();
+                            hamlibTestObject_ = nullptr;
+                        }
+                        else if (serialPortTestObject_ != nullptr)
+                        {
+                            serialPortTestObject_->ptt(false);
+                            serialPortTestObject_->disconnect();
+                            serialPortTestObject_ = nullptr;
+                        }
+
+                        audioEngine->stop();
+                        return;
                     }
-                    else if (serialPortTestObject_ != nullptr)
-                    {
-                        serialPortTestObject_->ptt(false);
-                        serialPortTestObject_->disconnect();
-                        serialPortTestObject_ = nullptr;
-                    }
-                
-                    audioEngine->stop();
-                    return;
+
+                    sineWaveSampleNumber_ = 0;
+
+                    txTestAudioDevice_->setOnAudioData([](IAudioDevice& dev, void* data, size_t size, void* state) FREEDV_NONBLOCKING {
+                        auto sr = dev.getSampleRate();
+                        EasySetupDialog* castedThis = (EasySetupDialog*)state;
+                        short* audioData = static_cast<short*>(data);
+
+                        for (unsigned long index = 0; index < size; index++)
+                        {
+                            *audioData++ = (SHRT_MAX) * sin(2 * PI * (1500) * castedThis->sineWaveSampleNumber_ / sr);
+                            castedThis->sineWaveSampleNumber_ = (castedThis->sineWaveSampleNumber_ + 1) % sr;
+                        }
+
+                    }, this);
+
+                    txTestAudioDevice_->start();
                 }
-            
-                sineWaveSampleNumber_ = 0;
 
-                txTestAudioDevice_->setOnAudioData([](IAudioDevice& dev, void* data, size_t size, void* state) FREEDV_NONBLOCKING {
-                    auto sr = dev.getSampleRate();
-                    EasySetupDialog* castedThis = (EasySetupDialog*)state;
-                    short* audioData = static_cast<short*>(data);
-    
-                    for (unsigned long index = 0; index < size; index++)
+                if (analogOutDeviceName != "none")
+                {
+                    analogPlaybackTestAudioDevice_ = audioEngine->getAudioDevice(analogOutDeviceName, IAudioEngine::AUDIO_ENGINE_OUT, analogOutSampleRate, 1);
+
+                    if (analogPlaybackTestAudioDevice_ != nullptr)
                     {
-                        *audioData++ = (SHRT_MAX) * sin(2 * PI * (1500) * castedThis->sineWaveSampleNumber_ / sr);
-                        castedThis->sineWaveSampleNumber_ = (castedThis->sineWaveSampleNumber_ + 1) % sr;
+                        analogSineWaveSampleNumber_ = 0;
+
+                        analogPlaybackTestAudioDevice_->setOnAudioData([](IAudioDevice& dev, void* data, size_t size, void* state) FREEDV_NONBLOCKING {
+                            auto sr = dev.getSampleRate();
+                            EasySetupDialog* castedThis = (EasySetupDialog*)state;
+                            short* audioData = static_cast<short*>(data);
+
+                            for (unsigned long index = 0; index < size; index++)
+                            {
+                                *audioData++ = (SHRT_MAX / 4) * sin(2 * PI * (1500) * castedThis->analogSineWaveSampleNumber_ / sr);
+                                castedThis->analogSineWaveSampleNumber_ = (castedThis->analogSineWaveSampleNumber_ + 1) % sr;
+                            }
+
+                        }, this);
+
+                        analogPlaybackTestAudioDevice_->start();
                     }
-
-                }, this);
-
-                txTestAudioDevice_->start();
+                }
             }
         
             // Disable all UI except the Stop button.
@@ -1061,7 +1140,10 @@ void EasySetupDialog::updateHamlibDevices_()
     {
         m_cbRigName->Append(HamlibRigController::RigIndexToName(index));
     }
-    m_cbRigName->SetSelection(wxGetApp().m_intHamlibRig);
+    if (wxGetApp().m_intHamlibRig >= 0)
+    {
+        m_cbRigName->SetSelection(wxGetApp().m_intHamlibRig);
+    }
     
     /* populate Hamlib serial rate combo box */
     updateHamlibSerialRates_();
@@ -1320,13 +1402,15 @@ void EasySetupDialog::updateAudioDevices_()
     }
     
     // FlexRadio shortcut: all devices starting with "DAX Audio RX" should be linked
-    // to the "DAX Audio TX" device. There's only one TX device for all digital mode
-    // applications intended to be used on a Flex radio.
+    // to the "DAX Audio TX" device (or "DAX RX" / "DAX TX" respectively in SmartSDR 4.2+). 
+    // There's only one TX device for all digital mode applications intended to be used 
+    // on a Flex radio.
     wxString fullTxDeviceName;
     int flexTxDeviceSampleRate = -1;
     for (auto& kvp : finalRadioDeviceList)
     {
-        if (kvp.first.StartsWith("DAX Audio TX") && kvp.second->txSampleRate > 0 && kvp.second->txDeviceName != "none")
+        if ((kvp.first.StartsWith("DAX Audio TX") || kvp.first.StartsWith("DAX TX")) && 
+            kvp.second->txSampleRate > 0 && kvp.second->txDeviceName != "none")
         {
             fullTxDeviceName = kvp.second->txDeviceName;
             flexTxDeviceSampleRate = kvp.second->txSampleRate;
@@ -1349,7 +1433,8 @@ void EasySetupDialog::updateAudioDevices_()
     {
         for (auto& kvp : finalRadioDeviceList)
         {
-            if (kvp.first.StartsWith("DAX Audio RX"))
+            if ((kvp.first.StartsWith("DAX Audio RX") && fullTxDeviceName.StartsWith("DAX Audio TX")) || 
+                (kvp.first.StartsWith("DAX RX") && fullTxDeviceName.StartsWith("DAX TX")))
             {
                 kvp.second->txDeviceName = fullTxDeviceName;
                 kvp.second->txSampleRate = flexTxDeviceSampleRate;

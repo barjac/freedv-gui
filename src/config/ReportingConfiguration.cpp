@@ -21,6 +21,8 @@
 
 #include <wx/tokenzr.h>
 #include <wx/numformatter.h>
+#include <wx/stdpaths.h>
+#include <wx/filename.h>
 #include <inttypes.h>
 
 #include "../defines.h"
@@ -63,7 +65,11 @@ ReportingConfiguration::ReportingConfiguration()
     , udpReportingEnabled("/Reporting/UDP/Enable", false)
     , udpReportingHostname("/Reporting/UDP/Hostname", _("127.0.0.1"))
     , udpReportingPort("/Reporting/UDP/Port", 2237)
-        
+
+    , udpBroadcastEnabled("/Reporting/UDPBroadcast/Enable", false)
+    , udpBroadcastAddress("/Reporting/UDPBroadcast/Address", _("224.0.0.1"))
+    , udpBroadcastPort("/Reporting/UDPBroadcast/Port", 7177)
+
     , useUTCForReporting("/CallsignList/UseUTCTime", false)
 
     , reportingFrequencyList("/Reporting/FrequencyList", {
@@ -95,6 +101,7 @@ ReportingConfiguration::ReportingConfiguration()
         
     , reportingFrequencyAsKhz("/Reporting/FrequencyAsKHz", false)
     , reportingDirectionAsCardinal("/Reporting/DirectionAsCardinal", false)
+    , csvLogFilePath("/Reporting/CSV/LogFilePath", _(""))
 {
     // Special handling for the frequency list to properly handle locales
     reportingFrequencyList.setLoadProcessor([this](std::vector<wxString> const& list) {
@@ -199,6 +206,10 @@ void ReportingConfiguration::load(wxConfigBase* config)
     load_(config, udpReportingHostname);
     load_(config, udpReportingPort);
 
+    load_(config, udpBroadcastEnabled);
+    load_(config, udpBroadcastAddress);
+    load_(config, udpBroadcastPort);
+
     load_(config, freedvReporterColumnOrder);
     load_(config, freedvReporterColumnVisibility);
 
@@ -226,6 +237,37 @@ void ReportingConfiguration::load(wxConfigBase* config)
     load_(config, freedvReporterMsgRowForegroundColor);
 
     load_(config, reportingDirectionAsCardinal);
+
+    load_(config, csvLogFilePath);
+
+    // Set default CSV log file path to Documents/freedv_rx_log.csv if not configured.
+    if (csvLogFilePath->IsEmpty())
+    {
+        wxString defaultPath;
+        wxString logFileName = "freedv_rx_log.csv";
+
+#if defined(__linux__)
+        // Special logic to force use of XDG_DATA_HOME as wxWidgets doesn't currently
+        // provide this in wxStandardPaths.
+        wxString xdgDataHome;
+        if (!wxGetEnv("XDG_DATA_HOME", &xdgDataHome))
+        {
+            // Default to $HOME/.local/share per XDG specification.
+            wxString home = wxGetHomeDir();
+            xdgDataHome = wxString::Format("%s/.local/share", home);
+        }
+
+        defaultPath = wxString::Format("%s/freedv", xdgDataHome);
+#else
+        defaultPath = wxStandardPaths::Get().GetDocumentsDir() + wxFILE_SEP_PATH + "freedv";
+#endif // wxCHECK_VERSION(3,1,0)
+
+        // Make folder (including parents as needed)
+        wxFileName dn = wxFileName::DirName(defaultPath);
+        dn.Mkdir(wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL);
+
+        csvLogFilePath.setWithoutProcessing(defaultPath + wxFILE_SEP_PATH + logFileName);
+    }
 
     // Special load handling for reporting below.
     wxString freqStr = config->Read(reportingFrequency.getElementName(), oldFreqStr);
@@ -266,7 +308,11 @@ void ReportingConfiguration::save(wxConfigBase* config)
     save_(config, udpReportingEnabled);
     save_(config, udpReportingHostname);
     save_(config, udpReportingPort);
-    
+
+    save_(config, udpBroadcastEnabled);
+    save_(config, udpBroadcastAddress);
+    save_(config, udpBroadcastPort);
+
     save_(config, useUTCForReporting);
     
     save_(config, reportingFrequencyAsKhz);
@@ -282,7 +328,9 @@ void ReportingConfiguration::save(wxConfigBase* config)
     save_(config, freedvReporterMsgRowForegroundColor);
 
     save_(config, reportingDirectionAsCardinal);
-    
+
+    save_(config, csvLogFilePath);
+
     // Special save handling for reporting below.
     wxString tempFreqStr = wxString::Format(wxT("%" PRIu64), reportingFrequency.getWithoutProcessing());
     config->Write(reportingFrequency.getElementName(), tempFreqStr);

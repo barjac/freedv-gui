@@ -25,6 +25,56 @@
 
 extern FreeDVInterface freedvInterface;
 
+// F13-F24 on Linux (and possibly other platforms) return values different
+// than how they're defined in wxWidgets. These constants are so we can
+// check for these as well and do the right thing for key->name mapping.
+constexpr int WXK_F13_LINUX = 436;
+constexpr int WXK_F24_LINUX = WXK_F13_LINUX + 11;
+
+// Returns a human-readable name for a PTT key code.
+static wxString getPTTKeyName(int keyCode)
+{
+    if (keyCode >= 'A' && keyCode <= 'Z')
+    {
+        return wxString((char)keyCode);
+    }
+    else if (keyCode >= '0' && keyCode <= '9')
+    {
+        return wxString((char)keyCode);
+    }
+    else if (keyCode >= WXK_F1 && keyCode <= WXK_F24)
+    {
+        return wxString::Format(_("F%d"), (keyCode - WXK_F1) + 1);
+    }
+    else if (keyCode >= WXK_F13_LINUX && keyCode <= WXK_F24_LINUX)
+    {
+        return wxString::Format(_("F%d"), (keyCode - WXK_F13_LINUX) + 13);
+    }
+
+    switch (keyCode)
+    {
+        case WXK_SPACE:    return _("Space");
+        case WXK_TAB:      return _("Tab");
+        case WXK_RETURN:   return _("Enter");
+        case WXK_ESCAPE:   return _("Escape");
+        case WXK_BACK:     return _("Backspace");
+        case WXK_DELETE:   return _("Delete");
+        case WXK_INSERT:   return _("Insert");
+        case WXK_HOME:     return _("Home");
+        case WXK_END:      return _("End");
+        case WXK_PAGEUP:   return _("Page Up");
+        case WXK_PAGEDOWN: return _("Page Down");
+        case WXK_UP:       return _("Up");
+        case WXK_DOWN:     return _("Down");
+        case WXK_LEFT:     return _("Left");
+        case WXK_RIGHT:    return _("Right");
+        default:
+            if (keyCode > 32 && keyCode < 127)
+                return wxString((char)keyCode);
+            return wxString::Format(_("Key(%d)"), keyCode);
+    }
+}
+
 // PortAudio over/underflow counters
 
 extern std::atomic<int>    g_infifo1_full;
@@ -156,7 +206,34 @@ OptionsDlg::OptionsDlg(wxWindow* parent, wxWindowID id, const wxString& title, c
     sbSizerReportingUDP->Add(m_udpPort, 0, wxALL | wxALIGN_CENTER_VERTICAL, 5);
     
     sbSizerReportingRows->Add(sbSizerReportingUDP, 0, wxALL | wxEXPAND, 5);
-    
+
+    // UDP broadcast reporting options (UdpReporter)
+    wxBoxSizer* sbSizerReportingUDPBroadcast = new wxBoxSizer(wxHORIZONTAL);
+    m_ckboxUDPBroadcastEnable = new wxCheckBox(sbReporting, wxID_ANY, _("Enable UDP Broadcast"), wxDefaultPosition, wxDefaultSize, wxCHK_2STATE);
+    m_ckboxUDPBroadcastEnable->SetToolTip(_("Broadcasts received callsign/frequency data as JSON UDP datagrams (e.g. to a multicast group or a local listener)."));
+    sbSizerReportingUDPBroadcast->Add(m_ckboxUDPBroadcastEnable, 0, wxALL | wxALIGN_CENTER_VERTICAL, 5);
+    wxStaticText* labelUDPBroadcastAddr = new wxStaticText(sbReporting, wxID_ANY, wxT("IP Address:"), wxDefaultPosition, wxDefaultSize, 0);
+    sbSizerReportingUDPBroadcast->Add(labelUDPBroadcastAddr, 0, wxALL | wxALIGN_CENTER_VERTICAL, 5);
+    m_udpBroadcastAddress = new wxTextCtrl(sbReporting, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(150, -1), 0);
+    sbSizerReportingUDPBroadcast->Add(m_udpBroadcastAddress, 0, wxALL | wxALIGN_CENTER_VERTICAL, 5);
+    wxStaticText* labelUDPBroadcastPort = new wxStaticText(sbReporting, wxID_ANY, wxT("Port:"), wxDefaultPosition, wxDefaultSize, 0);
+    sbSizerReportingUDPBroadcast->Add(labelUDPBroadcastPort, 0, wxALL | wxALIGN_CENTER_VERTICAL, 5);
+    m_udpBroadcastPort = new wxTextCtrl(sbReporting, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(60, -1), 0);
+    sbSizerReportingUDPBroadcast->Add(m_udpBroadcastPort, 0, wxALL | wxALIGN_CENTER_VERTICAL, 5);
+
+    sbSizerReportingRows->Add(sbSizerReportingUDPBroadcast, 0, wxALL | wxEXPAND, 5);
+
+    // CSV log file path
+    wxBoxSizer* sbSizerCsvLog = new wxBoxSizer(wxHORIZONTAL);
+    wxStaticText* labelCsvLogPath = new wxStaticText(sbReporting, wxID_ANY, wxT("Stations Heard Log File:"), wxDefaultPosition, wxDefaultSize, 0);
+    sbSizerCsvLog->Add(labelCsvLogPath, 0, wxALL | wxALIGN_CENTER_VERTICAL, 5);
+    m_txtCtrlCsvLogFilePath = new wxTextCtrl(sbReporting, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(200, -1), 0);
+    sbSizerCsvLog->Add(m_txtCtrlCsvLogFilePath, 1, wxALL | wxALIGN_CENTER_VERTICAL, 5);
+    m_buttonChooseCsvLogFilePath = new wxButton(sbReporting, wxID_ANY, _("Choose"), wxDefaultPosition, wxSize(-1, -1), 0);
+    m_buttonChooseCsvLogFilePath->SetMinSize(wxSize(120, -1));
+    sbSizerCsvLog->Add(m_buttonChooseCsvLogFilePath, 0, wxALL | wxALIGN_CENTER_VERTICAL, 5);
+    sbSizerReportingRows->Add(sbSizerCsvLog, 0, wxALL | wxEXPAND, 5);
+
     sizerReporting->Add(sbSizerReportingRows, 0, wxALL | wxEXPAND, 5);
     
     // FreeDV Reporter options that don't depend on Reporting checkboxes
@@ -201,8 +278,18 @@ OptionsDlg::OptionsDlg(wxWindow* parent, wxWindowID id, const wxString& title, c
     wxStaticBox *sb_ptt = new wxStaticBox(m_rigControlTab, wxID_ANY, _("PTT Options"));
     sbSizer_ptt = new wxStaticBoxSizer(sb_ptt, wxVERTICAL);
     
-    m_ckboxEnableSpacebarForPTT = new wxCheckBox(sb_ptt, wxID_ANY, _("Enable Space key for PTT"), wxDefaultPosition, wxDefaultSize, wxCHK_2STATE);
-    sbSizer_ptt->Add(m_ckboxEnableSpacebarForPTT, 0, wxALL | wxALIGN_LEFT, 5);
+    wxSizer* pttKeySizer = new wxBoxSizer(wxHORIZONTAL);
+    m_ckboxEnableSpacebarForPTT = new wxCheckBox(sb_ptt, wxID_ANY, _("Enable key for PTT:"), wxDefaultPosition, wxDefaultSize, wxCHK_2STATE);
+    pttKeySizer->Add(m_ckboxEnableSpacebarForPTT, 0, wxALL | wxALIGN_CENTER_VERTICAL, 5);
+
+    m_txtPTTKeyName = new wxTextCtrl(sb_ptt, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(120, -1), wxTE_READONLY | wxTE_PROCESS_ENTER);
+    m_txtPTTKeyName->SetToolTip(_("The key currently assigned to PTT."));
+    pttKeySizer->Add(m_txtPTTKeyName, 0, wxALL | wxALIGN_CENTER_VERTICAL, 5);
+
+    m_btnSetPTTKey = new wxButton(sb_ptt, wxID_ANY, _("Change..."), wxDefaultPosition, wxDefaultSize);
+    pttKeySizer->Add(m_btnSetPTTKey, 0, wxALL | wxALIGN_CENTER_VERTICAL, 5);
+
+    sbSizer_ptt->Add(pttKeySizer, 0, wxALL, 0);
 
     wxSizer* txRxDelaySizer = new wxBoxSizer(wxHORIZONTAL);
     
@@ -214,6 +301,24 @@ OptionsDlg::OptionsDlg(wxWindow* parent, wxWindowID id, const wxString& title, c
     txRxDelaySizer->Add(m_txtTxRxDelayMilliseconds, 0, wxALL | wxALIGN_CENTER_VERTICAL, 5);
 
     sbSizer_ptt->Add(txRxDelaySizer, 0, wxALL, 0);
+
+    wxSizer* totTimerSizer = new wxBoxSizer(wxHORIZONTAL);
+
+    m_ckboxTOTTimerEnabled = new wxCheckBox(sb_ptt, wxID_ANY, _("Enable Time-Out Timer (TOT):"), wxDefaultPosition, wxDefaultSize, wxCHK_2STATE);
+    m_ckboxTOTTimerEnabled->SetToolTip(_("When enabled, FreeDV will automatically stop transmitting after the configured time period has elapsed."));
+    totTimerSizer->Add(m_ckboxTOTTimerEnabled, 0, wxALL | wxALIGN_CENTER_VERTICAL, 5);
+
+    m_txtTOTTimerSecs = new wxTextCtrl(sb_ptt, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(80, -1), 0, wxTextValidator(wxFILTER_DIGITS));
+    m_txtTOTTimerSecs->SetToolTip(_("The number of seconds FreeDV will transmit before automatically dropping back to receive."));
+    totTimerSizer->Add(m_txtTOTTimerSecs, 0, wxALL | wxALIGN_CENTER_VERTICAL, 5);
+
+    auto totTimerSecsLabel = new wxStaticText(sb_ptt, wxID_ANY, _("seconds"));
+    totTimerSizer->Add(totTimerSecsLabel, 0, wxALL | wxALIGN_LEFT | wxALIGN_CENTER_VERTICAL, 5);
+
+    sbSizer_ptt->Add(totTimerSizer, 0, wxALL, 0);
+
+    m_ckboxTOTTimerEnabled->Connect(wxEVT_CHECKBOX, wxCommandEventHandler(OptionsDlg::OnTOTTimerEnable), NULL, this);
+
     sizerRigControl->Add(sbSizer_ptt,0, wxALL | wxEXPAND, 5);
     
     wxStaticBoxSizer* sbSizer_hamlib;
@@ -800,11 +905,14 @@ OptionsDlg::OptionsDlg(wxWindow* parent, wxWindowID id, const wxString& title, c
     m_buttonChooseQuickRecordRawPath->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(OptionsDlg::OnChooseQuickRecordPath), NULL, this);
     m_buttonChooseQuickRecordDecodedPath->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(OptionsDlg::OnChooseQuickRecordPath), NULL, this);
 
+    m_buttonChooseCsvLogFilePath->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(OptionsDlg::OnChooseCsvLogFilePath), NULL, this);
+
     m_BtnFifoReset->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(OptionsDlg::OnFifoReset), NULL, this);
 
     m_ckboxReportingEnable->Connect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler(OptionsDlg::OnReportingEnable), NULL, this);
     m_ckboxFreeDVReporterEnable->Connect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler(OptionsDlg::OnReportingEnable), NULL, this);
     m_ckboxUDPReportingEnable->Connect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler(OptionsDlg::OnReportingEnable), NULL, this);
+    m_ckboxUDPBroadcastEnable->Connect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler(OptionsDlg::OnReportingEnable), NULL, this);
     m_ckboxTone->Connect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler(OptionsDlg::OnToneStateEnable), NULL, this);
     
     m_ckboxMultipleRx->Connect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler(OptionsDlg::OnMultipleRxEnable), NULL, this);
@@ -812,6 +920,12 @@ OptionsDlg::OptionsDlg(wxWindow* parent, wxWindowID id, const wxString& title, c
     m_ckboxEnableFreqModeChanges->Connect(wxEVT_RADIOBUTTON, wxCommandEventHandler(OptionsDlg::OnFreqModeChangeEnable), NULL, this);
     m_ckboxEnableFreqChangesOnly->Connect(wxEVT_RADIOBUTTON, wxCommandEventHandler(OptionsDlg::OnFreqModeChangeEnable), NULL, this);
     m_ckboxNoFreqModeChanges->Connect(wxEVT_RADIOBUTTON, wxCommandEventHandler(OptionsDlg::OnFreqModeChangeEnable), NULL, this);
+
+    m_ckboxEnableSpacebarForPTT->Connect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler(OptionsDlg::OnEnableSpacebarForPTT), NULL, this);
+    m_btnSetPTTKey->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(OptionsDlg::OnSetPTTKey), NULL, this);
+    m_txtPTTKeyName->Bind(wxEVT_KEY_DOWN, &OptionsDlg::OnPTTKeyCapture, this);
+    m_txtPTTKeyName->Bind(wxEVT_CHAR, &OptionsDlg::OnPTTKeyCapture, this);
+    this->Bind(wxEVT_CHAR_HOOK, &OptionsDlg::OnDialogCharHook, this);
     
     m_freqList->Connect(wxEVT_LISTBOX, wxCommandEventHandler(OptionsDlg::OnReportingFreqSelectionChange), NULL, this);
     m_txtCtrlNewFrequency->Connect(wxEVT_TEXT, wxCommandEventHandler(OptionsDlg::OnReportingFreqTextChange), NULL, this);
@@ -845,6 +959,7 @@ OptionsDlg::~OptionsDlg()
     m_buttonChooseVoiceKeyerWaveFilePath->Disconnect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(OptionsDlg::OnChooseVoiceKeyerWaveFilePath), NULL, this);
     m_buttonChooseQuickRecordRawPath->Disconnect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(OptionsDlg::OnChooseQuickRecordPath), NULL, this);
     m_buttonChooseQuickRecordDecodedPath->Disconnect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(OptionsDlg::OnChooseQuickRecordPath), NULL, this);
+    m_buttonChooseCsvLogFilePath->Disconnect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(OptionsDlg::OnChooseCsvLogFilePath), NULL, this);
 
     m_BtnFifoReset->Disconnect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(OptionsDlg::OnFifoReset), NULL, this);
 
@@ -855,6 +970,7 @@ OptionsDlg::~OptionsDlg()
     m_ckboxReportingEnable->Disconnect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler(OptionsDlg::OnReportingEnable), NULL, this);
     m_ckboxFreeDVReporterEnable->Disconnect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler(OptionsDlg::OnReportingEnable), NULL, this);
     m_ckboxUDPReportingEnable->Disconnect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler(OptionsDlg::OnReportingEnable), NULL, this);
+    m_ckboxUDPBroadcastEnable->Disconnect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler(OptionsDlg::OnReportingEnable), NULL, this);
     m_ckboxTone->Disconnect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler(OptionsDlg::OnToneStateEnable), NULL, this);
     
     m_ckboxMultipleRx->Disconnect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler(OptionsDlg::OnMultipleRxEnable), NULL, this);
@@ -862,6 +978,12 @@ OptionsDlg::~OptionsDlg()
     m_ckboxEnableFreqModeChanges->Disconnect(wxEVT_RADIOBUTTON, wxCommandEventHandler(OptionsDlg::OnFreqModeChangeEnable), NULL, this);
     m_ckboxEnableFreqChangesOnly->Disconnect(wxEVT_RADIOBUTTON, wxCommandEventHandler(OptionsDlg::OnFreqModeChangeEnable), NULL, this);
     m_ckboxNoFreqModeChanges->Disconnect(wxEVT_RADIOBUTTON, wxCommandEventHandler(OptionsDlg::OnFreqModeChangeEnable), NULL, this);
+
+    m_ckboxEnableSpacebarForPTT->Disconnect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler(OptionsDlg::OnEnableSpacebarForPTT), NULL, this);
+    m_btnSetPTTKey->Disconnect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(OptionsDlg::OnSetPTTKey), NULL, this);
+    m_txtPTTKeyName->Unbind(wxEVT_KEY_DOWN, &OptionsDlg::OnPTTKeyCapture, this);
+    m_txtPTTKeyName->Unbind(wxEVT_CHAR, &OptionsDlg::OnPTTKeyCapture, this);
+    this->Unbind(wxEVT_CHAR_HOOK, &OptionsDlg::OnDialogCharHook, this);
     
     m_freqList->Disconnect(wxEVT_LISTBOX, wxCommandEventHandler(OptionsDlg::OnReportingFreqSelectionChange), NULL, this);
     m_txtCtrlNewFrequency->Disconnect(wxEVT_TEXT, wxCommandEventHandler(OptionsDlg::OnReportingFreqTextChange), NULL, this);
@@ -903,7 +1025,19 @@ void OptionsDlg::ExchangeData(int inout, bool storePersistent)
         m_txtCtrlCallSign->SetValue(wxGetApp().appConfiguration.reportingConfiguration.reportingFreeTextString);
 
         m_ckboxEnableSpacebarForPTT->SetValue(wxGetApp().appConfiguration.enableSpaceBarForPTT);
+        m_selectedPTTKeyCode = wxGetApp().appConfiguration.pttKeyCode;
+        m_capturingPTTKey = false;
+        m_txtPTTKeyName->SetValue(getPTTKeyName(m_selectedPTTKeyCode));
+        m_txtPTTKeyName->SetEditable(false);
+        bool pttEnabled = wxGetApp().appConfiguration.enableSpaceBarForPTT;
+        m_txtPTTKeyName->Enable(pttEnabled);
+        m_btnSetPTTKey->Enable(pttEnabled);
         m_txtTxRxDelayMilliseconds->SetValue(wxString::Format("%d", wxGetApp().appConfiguration.txRxDelayMilliseconds.get()));
+
+        m_ckboxTOTTimerEnabled->SetValue(wxGetApp().appConfiguration.rigControlConfiguration.totTimerEnabled);
+        m_txtTOTTimerSecs->SetValue(wxString::Format("%d", wxGetApp().appConfiguration.rigControlConfiguration.totTimerSecs.get()));
+        m_txtTOTTimerSecs->Enable(wxGetApp().appConfiguration.rigControlConfiguration.totTimerEnabled);
+
         m_ckboxUseAnalogModes->SetValue(wxGetApp().appConfiguration.rigControlConfiguration.hamlibUseAnalogModes);
         m_ckboxEnableFreqModeChanges->SetValue(wxGetApp().appConfiguration.rigControlConfiguration.hamlibEnableFreqModeChanges);
         m_ckboxEnableFreqChangesOnly->SetValue(wxGetApp().appConfiguration.rigControlConfiguration.hamlibEnableFreqChangesOnly);
@@ -978,7 +1112,15 @@ void OptionsDlg::ExchangeData(int inout, bool storePersistent)
         m_ckboxUDPReportingEnable->SetValue(wxGetApp().appConfiguration.reportingConfiguration.udpReportingEnabled);
         m_udpHostname->SetValue(wxGetApp().appConfiguration.reportingConfiguration.udpReportingHostname);
         m_udpPort->SetValue(wxString::Format(wxT("%i"), wxGetApp().appConfiguration.reportingConfiguration.udpReportingPort.get()));
-        
+
+        // UDP broadcast options (UdpReporter)
+        m_ckboxUDPBroadcastEnable->SetValue(wxGetApp().appConfiguration.reportingConfiguration.udpBroadcastEnabled);
+        m_udpBroadcastAddress->SetValue(wxGetApp().appConfiguration.reportingConfiguration.udpBroadcastAddress);
+        m_udpBroadcastPort->SetValue(wxString::Format(wxT("%i"), wxGetApp().appConfiguration.reportingConfiguration.udpBroadcastPort.get()));
+
+        // CSV log file path
+        m_txtCtrlCsvLogFilePath->SetValue(wxGetApp().appConfiguration.reportingConfiguration.csvLogFilePath);
+
         // Callsign list config
         m_ckbox_use_utc_time->SetValue(wxGetApp().appConfiguration.reportingConfiguration.useUTCForReporting);
         
@@ -1071,9 +1213,18 @@ void OptionsDlg::ExchangeData(int inout, bool storePersistent)
         wxGetApp().appConfiguration.reportingConfiguration.reportingFrequencyList = tmpList;
         
         wxGetApp().appConfiguration.enableSpaceBarForPTT = m_ckboxEnableSpacebarForPTT->GetValue();
+        wxGetApp().appConfiguration.pttKeyCode = m_selectedPTTKeyCode;
 
         wxGetApp().appConfiguration.txRxDelayMilliseconds = wxAtoi(m_txtTxRxDelayMilliseconds->GetValue());
-        
+
+        wxGetApp().appConfiguration.rigControlConfiguration.totTimerEnabled = m_ckboxTOTTimerEnabled->GetValue();
+        {
+            long totSecs;
+            m_txtTOTTimerSecs->GetValue().ToLong(&totSecs);
+            if (totSecs < 1) totSecs = 1;
+            wxGetApp().appConfiguration.rigControlConfiguration.totTimerSecs = (int)totSecs;
+        }
+
         wxGetApp().appConfiguration.rigControlConfiguration.hamlibUseAnalogModes = m_ckboxUseAnalogModes->GetValue();
         
         wxGetApp().appConfiguration.rigControlConfiguration.hamlibEnableFreqModeChanges = m_ckboxEnableFreqModeChanges->GetValue();
@@ -1168,11 +1319,22 @@ void OptionsDlg::ExchangeData(int inout, bool storePersistent)
         // UDP reporting options
         wxGetApp().appConfiguration.reportingConfiguration.udpReportingEnabled = m_ckboxUDPReportingEnable->GetValue();
         wxGetApp().appConfiguration.reportingConfiguration.udpReportingHostname = m_udpHostname->GetValue();
-        
+
         long udpPort;
         m_udpPort->GetValue().ToLong(&udpPort);
         wxGetApp().appConfiguration.reportingConfiguration.udpReportingPort = (int)udpPort;
-            
+
+        // UDP broadcast options (UdpReporter)
+        wxGetApp().appConfiguration.reportingConfiguration.udpBroadcastEnabled = m_ckboxUDPBroadcastEnable->GetValue();
+        wxGetApp().appConfiguration.reportingConfiguration.udpBroadcastAddress = m_udpBroadcastAddress->GetValue();
+
+        long udpBroadcastPort;
+        m_udpBroadcastPort->GetValue().ToLong(&udpBroadcastPort);
+        wxGetApp().appConfiguration.reportingConfiguration.udpBroadcastPort = (int)udpBroadcastPort;
+
+        // CSV log file path
+        wxGetApp().appConfiguration.reportingConfiguration.csvLogFilePath = m_txtCtrlCsvLogFilePath->GetValue();
+
         // Callsign list config
         wxGetApp().appConfiguration.reportingConfiguration.useUTCForReporting = m_ckbox_use_utc_time->GetValue();
         
@@ -1330,6 +1492,23 @@ void OptionsDlg::OnChooseQuickRecordPath(wxCommandEvent& event) {
      }
 }
 
+void OptionsDlg::OnChooseCsvLogFilePath(wxCommandEvent&) {
+    wxFileDialog fileDialog(
+        this,
+        wxT("Choose CSV log file location"),
+        wxPathOnly(m_txtCtrlCsvLogFilePath->GetValue()),
+        wxFileNameFromPath(m_txtCtrlCsvLogFilePath->GetValue()),
+        wxT("CSV files (*.csv)|*.csv|All files (*.*)|*.*"),
+        wxFD_SAVE | wxFD_OVERWRITE_PROMPT
+    );
+
+    if (fileDialog.ShowModal() == wxID_CANCEL) {
+        return;
+    }
+
+    m_txtCtrlCsvLogFilePath->SetValue(fileDialog.GetPath());
+}
+
 void OptionsDlg::OnFreeDV700txClip(wxScrollEvent&) {
     wxGetApp().appConfiguration.freedv700Clip = m_ckboxFreeDV700txClip->GetValue();
 }
@@ -1379,7 +1558,7 @@ void OptionsDlg::updateReportingState()
             m_ckboxFreeDVReporterForceReceiveOnly->Enable(true);
             m_useCardinalDirections->Enable(true);
             m_ckboxUDPReportingEnable->Enable(true);
-            
+
             if (m_ckboxUDPReportingEnable->GetValue())
             {
                 m_udpHostname->Enable(true);
@@ -1389,6 +1568,19 @@ void OptionsDlg::updateReportingState()
             {
                 m_udpHostname->Enable(false);
                 m_udpPort->Enable(false);
+            }
+
+            m_ckboxUDPBroadcastEnable->Enable(true);
+
+            if (m_ckboxUDPBroadcastEnable->GetValue())
+            {
+                m_udpBroadcastAddress->Enable(true);
+                m_udpBroadcastPort->Enable(true);
+            }
+            else
+            {
+                m_udpBroadcastAddress->Enable(false);
+                m_udpBroadcastPort->Enable(false);
             }
         }
         else
@@ -1404,7 +1596,10 @@ void OptionsDlg::updateReportingState()
             m_udpHostname->Enable(false);
             m_udpPort->Enable(false);
             m_ckboxUDPReportingEnable->Enable(false);
-        }    
+            m_udpBroadcastAddress->Enable(false);
+            m_udpBroadcastPort->Enable(false);
+            m_ckboxUDPBroadcastEnable->Enable(false);
+        }
     }
     else
     {
@@ -1423,7 +1618,10 @@ void OptionsDlg::updateReportingState()
         m_udpHostname->Enable(false);
         m_udpPort->Enable(false);
         m_ckboxUDPReportingEnable->Enable(false);
-        
+        m_udpBroadcastAddress->Enable(false);
+        m_udpBroadcastPort->Enable(false);
+        m_ckboxUDPBroadcastEnable->Enable(false);
+
         m_ckbox_use_utc_time->Enable(false);
     }
 }
@@ -1500,6 +1698,87 @@ void OptionsDlg::OnMultipleRxEnable(wxCommandEvent&)
 void OptionsDlg::OnFreqModeChangeEnable(wxCommandEvent&)
 {
     updateRigControlState();
+}
+
+void OptionsDlg::OnEnableSpacebarForPTT(wxCommandEvent&)
+{
+    bool enabled = m_ckboxEnableSpacebarForPTT->GetValue();
+    m_txtPTTKeyName->Enable(enabled);
+    m_btnSetPTTKey->Enable(enabled);
+    if (!enabled)
+        exitPTTCaptureMode_(false);
+}
+
+void OptionsDlg::OnTOTTimerEnable(wxCommandEvent&)
+{
+    m_txtTOTTimerSecs->Enable(m_ckboxTOTTimerEnabled->GetValue());
+}
+
+void OptionsDlg::OnSetPTTKey(wxCommandEvent&)
+{
+    if (m_capturingPTTKey)
+        exitPTTCaptureMode_(false);
+    else
+        enterPTTCaptureMode_();
+}
+
+void OptionsDlg::OnDialogCharHook(wxKeyEvent& event)
+{
+    // wxEVT_CHAR_HOOK reaches the dialog before wxEVT_KEY_DOWN reaches any child
+    // control, so this is the only place to intercept Escape while in capture mode
+    // — otherwise wxDialog's built-in handler closes the dialog first.
+    if (m_capturingPTTKey && event.GetKeyCode() == WXK_ESCAPE)
+    {
+        exitPTTCaptureMode_(false);
+        return; // consume — do not let the dialog treat Escape as Cancel
+    }
+    event.Skip();
+}
+
+void OptionsDlg::OnPTTKeyCapture(wxKeyEvent& event)
+{
+    if (!m_capturingPTTKey) { event.Skip(); return; }
+
+    int keyCode = event.GetKeyCode();
+    // Normalize lowercase letters to match wxEVT_KEY_DOWN uppercase convention.
+    if (keyCode >= 'a' && keyCode <= 'z')
+        keyCode -= ('a' - 'A');
+
+    if (keyCode == WXK_TAB)
+    {
+        exitPTTCaptureMode_(false);
+        event.Skip();
+        return;
+    }
+    // Ignore bare modifier keys.
+    if (keyCode == WXK_SHIFT || keyCode == WXK_CONTROL || keyCode == WXK_ALT ||
+        keyCode == WXK_CAPITAL || keyCode == WXK_NUMLOCK || keyCode == WXK_SCROLL ||
+        keyCode == WXK_NONE || keyCode == WXK_WINDOWS_LEFT || keyCode == WXK_WINDOWS_RIGHT ||
+        keyCode == WXK_WINDOWS_MENU || keyCode == WXK_COMMAND)
+    {
+        return;
+    }
+    exitPTTCaptureMode_(true, keyCode);
+    // Don't Skip() — prevents the key from typing into the text field.
+}
+
+void OptionsDlg::enterPTTCaptureMode_()
+{
+    m_capturingPTTKey = true;
+    m_txtPTTKeyName->SetEditable(true);
+    m_txtPTTKeyName->SetValue(_("Press any key..."));
+    m_txtPTTKeyName->SetFocus();
+    m_btnSetPTTKey->SetLabel(_("Cancel"));
+}
+
+void OptionsDlg::exitPTTCaptureMode_(bool accept, int keyCode)
+{
+    m_capturingPTTKey = false;
+    if (accept)
+        m_selectedPTTKeyCode = keyCode;
+    m_txtPTTKeyName->SetValue(getPTTKeyName(m_selectedPTTKeyCode));
+    m_txtPTTKeyName->SetEditable(false);
+    m_btnSetPTTKey->SetLabel(_("Change..."));
 }
 
 void OptionsDlg::DisplayFifoPACounters() {
