@@ -2617,9 +2617,22 @@ void MainFrame::performFreeDVOn_()
         }
         else
         {
+            // The over-the-air "Reliable Text"/EOO encoding uses a 6-bit alphabet that
+            // can't represent '/' (it collides with '0') and can't carry more than 8
+            // characters. Rather than silently sending a corrupted callsign, skip OTA
+            // callsign transmission entirely for callsigns that don't fit; the callsign
+            // still reaches FreeDV Reporter, PSK Reporter and UDP logging correctly since
+            // those read the configured callsign directly, not via this encoding.
+            wxString callsignForOta = wxGetApp().appConfiguration.reportingConfiguration.reportingCallsign;
+            if (callsignForOta.length() > 8 || callsignForOta.Find('/') != wxNOT_FOUND)
+            {
+                log_info("Callsign '%s' can't be sent over the air (contains '/' or is longer than 8 characters); disabling OTA callsign transmission", (const char*)callsignForOta.ToUTF8());
+                callsignForOta = wxEmptyString;
+            }
+
             char temp[9];
             memset(temp, 0, 9);
-            strncpy(temp, wxGetApp().appConfiguration.reportingConfiguration.reportingCallsign->ToUTF8(), 8); // One less than the size of temp to ensure we don't overwrite the null.
+            strncpy(temp, callsignForOta.ToUTF8(), 8); // One less than the size of temp to ensure we don't overwrite the null.
             log_info("Setting callsign to %s", temp);
             freedvInterface.setReliableText(temp);
             
