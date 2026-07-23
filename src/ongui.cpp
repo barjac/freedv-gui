@@ -376,7 +376,7 @@ void MainFrame::onFrequencyModeChange_(IRigFrequencyController*, uint64_t freq, 
                 m_txtModeStatus->Enable(true);
                 break;
             default:
-                m_txtModeStatus->SetLabel(wxT("unk"));
+                m_txtModeStatus->SetLabel(wxEmptyString);
                 m_txtModeStatus->Enable(false);
                 break;
         }
@@ -484,7 +484,7 @@ void MainFrame::onRadioConnected_(IRigController*)
 void MainFrame::onRadioDisconnected_(IRigController*)
 {
     CallAfter([&]() {
-        m_txtModeStatus->SetLabel(wxT("unk"));
+        m_txtModeStatus->SetLabel(wxEmptyString);
         m_txtModeStatus->Enable(false);
     });
 }
@@ -1749,18 +1749,6 @@ void MainFrame::OnTogBtnAnalogClick (wxCommandEvent& event)
     event.Skip();
 }
 
-void MainFrame::OnCallSignReset(wxCommandEvent&)
-{
-    m_pcallsign = m_callsign;
-    memset(m_callsign, 0, MAX_CALLSIGN);
-    wxString s;
-    s.Printf("%s", m_callsign);
-    m_txtCtrlCallSign->SetValue(s);
-    
-    m_lastReportedCallsignListView->DeleteAllItems();
-    m_cboLastReportedCallsigns->SetText(_(""));
-}
-
 void MainFrame::OnLogQSO(wxCommandEvent&)
 {
     wxString dxCall;
@@ -1861,7 +1849,7 @@ void MainFrame::OnRightClickCallsignList(wxMouseEvent&)
     // See OnCloseCallsignList() for why this is deferred and followed by a
     // forced repaint.
     CallAfter([this]() {
-        m_BtnCallSignReset->SetFocus();
+        m_txtCtrlCallSign->SetFocus();
         m_cboLastReportedCallsigns->Refresh();
         m_cboLastReportedCallsigns->Update();
     });
@@ -1884,7 +1872,7 @@ void MainFrame::OnCloseCallsignList( wxCommandEvent& event )
         // Deferred via CallAfter so it runs once the popup's own dismissal
         // processing has fully finished.
         CallAfter([this]() {
-            m_BtnCallSignReset->SetFocus();
+            m_txtCtrlCallSign->SetFocus();
 
             // The popup window overlaps the combo's own value area while
             // open; on dismiss GTK doesn't always damage/repaint that
