@@ -465,7 +465,7 @@ void RefreshGroupBoxTints()
     }
 }
 
-TintedGroupBox::TintedGroupBox(wxWindow* parent, const wxString& title, wxOrientation orientation)
+TintedGroupBox::TintedGroupBox(wxWindow* parent, const wxString& title, wxOrientation orientation, int contextMenuBoxIndex)
     : wxPanel(parent, wxID_ANY)
 {
     SetBackgroundColour(GroupBoxBackgroundColour());
@@ -493,6 +493,35 @@ TintedGroupBox::TintedGroupBox(wxWindow* parent, const wxString& title, wxOrient
     SetSizer(outerSizer);
 
     s_tintedGroupBoxes.push_back(this);
+
+    // Only the movable "Show menu" boxes are constructed with a real
+    // contextMenuBoxIndex -- wire those up so right-clicking the title or
+    // background pops up the Hide/Move menu (Stage 10). Forwards straight to
+    // TopFrame::OnGroupBoxRightClick() rather than through the wx event
+    // system, since there's nothing else that needs to intercept it.
+    if (contextMenuBoxIndex >= 0)
+    {
+        auto forward = [this, contextMenuBoxIndex]()
+        {
+            static_cast<TopFrame*>(wxGetTopLevelParent(this))->OnGroupBoxRightClick(contextMenuBoxIndex);
+        };
+
+#if wxCHECK_VERSION(3, 3, 0) && defined(__WXGTK__)
+        // See the equivalent comment by m_txLevelBox's own context menu
+        // wiring further down this file: wxGTK 3.3+ fires wxEVT_CONTEXT_MENU
+        // on button-press for these widget types, causing GTK to dismiss
+        // PopupMenu on button release; use RIGHT_UP instead. MSW/OSX are
+        // unaffected, so this is GTK-specific.
+        this->Bind(wxEVT_RIGHT_UP, [forward](wxMouseEvent&) { forward(); });
+        m_title->Bind(wxEVT_RIGHT_UP, [forward](wxMouseEvent&) { forward(); });
+#else
+        // wxGTK < 3.3 does not generate RIGHT_UP for windowless widget types;
+        // CONTEXT_MENU works without the dismiss issue. (Also used as-is on
+        // MSW/OSX regardless of wx version -- see above.)
+        this->Bind(wxEVT_CONTEXT_MENU, [forward](wxContextMenuEvent&) { forward(); });
+        m_title->Bind(wxEVT_CONTEXT_MENU, [forward](wxContextMenuEvent&) { forward(); });
+#endif
+    }
 }
 
 TintedGroupBox::~TintedGroupBox()
@@ -664,9 +693,9 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     // Left side
     //=====================================================
     wxSizer* leftOuterSizer = new wxBoxSizer(wxVERTICAL);
-    wxSizer* leftSizer = new wxWrapSizer(wxVERTICAL, wxREMOVE_LEADING_SPACES);
+    leftSizer = new wxWrapSizer(wxVERTICAL, wxREMOVE_LEADING_SPACES);
 
-    snrBox = new TintedGroupBox(m_panel, _("SNR"), wxVERTICAL);
+    snrBox = new TintedGroupBox(m_panel, _("SNR"), wxVERTICAL, 0);
 
     //------------------------------
     // S/N ratio Gauge (vert. bargraph)
@@ -694,7 +723,7 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     //------------------------------
     // Signal Level(vert. bargraph)
     //------------------------------
-    levelBox = new TintedGroupBox(m_panel, _("Level"), wxHORIZONTAL);
+    levelBox = new TintedGroupBox(m_panel, _("Level"), wxHORIZONTAL, 1);
 
     m_gaugeLevel = new wxGauge(levelBox, wxID_ANY, 100, wxDefaultPosition, wxSize(100,15), wxGA_SMOOTH);
     m_gaugeLevel->SetToolTip(_("Peak of From Radio in Rx, or peak of From Mic in Tx mode.  If Red you should reduce your levels"));
@@ -708,7 +737,7 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     //------------------------------
     // Sync  Indicator box
     //------------------------------
-    syncBox = new TintedGroupBox(m_panel, _("Sync"), wxVERTICAL);
+    syncBox = new TintedGroupBox(m_panel, _("Sync"), wxVERTICAL, 2);
 
     m_textSync = new wxStaticText(syncBox, wxID_ANY, wxT("RADEV2"), wxDefaultPosition, wxDefaultSize, wxALIGN_CENTRE);
     syncBox->GetContentSizer()->Add(m_textSync, 0, wxALIGN_CENTER_HORIZONTAL, 1);
@@ -719,7 +748,7 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     //------------------------------
     // Audio Recording/Playback
     //------------------------------
-    audioBox = new TintedGroupBox(m_panel, _("Audio Recording"), wxVERTICAL);
+    audioBox = new TintedGroupBox(m_panel, _("Audio Recording"), wxVERTICAL, 3);
 
     m_audioRecord = new wxToggleButton(audioBox, wxID_ANY, _("Record"), wxDefaultPosition, wxDefaultSize, 0);
     m_audioRecord->SetToolTip(_("Records incoming over the air signals as well as anything transmitted."));
@@ -730,7 +759,7 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     //------------------------------
     // QSO logging
     //------------------------------
-    logBox = new TintedGroupBox(m_panel, _("Logging"), wxVERTICAL);
+    logBox = new TintedGroupBox(m_panel, _("Logging"), wxVERTICAL, 4);
 
     m_logQSO = new wxButton(logBox, wxID_ANY, _("Log QSO"), wxDefaultPosition, wxDefaultSize, 0);
     m_logQSO->SetToolTip(_("Logs most recent QSO."));
@@ -742,7 +771,7 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     //------------------------------
     // FreeDV Reporter quick options
     //------------------------------
-    reporterBox = new TintedGroupBox(m_panel, _("FDV Reporting"), wxVERTICAL);
+    reporterBox = new TintedGroupBox(m_panel, _("FDV Reporting"), wxVERTICAL, 5);
 
     m_reporterHidden = new wxToggleButton(reporterBox, wxID_ANY, _("Turn Off"), wxDefaultPosition, wxDefaultSize, 0);
     m_reporterHidden->SetToolTip(_("Quick ON/OFF for FreeDV Reporting, when enabled in Tools->Settings->Reporting."));
@@ -851,7 +880,7 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     rightSizer = new wxWrapSizer(wxVERTICAL, wxREMOVE_LEADING_SPACES);
 
     // Transmit Level slider
-    m_txLevelBox = new TintedGroupBox(m_panel, _("TX &Attenuation"), wxVERTICAL);
+    m_txLevelBox = new TintedGroupBox(m_panel, _("TX &Attenuation"), wxVERTICAL, 6);
 
     wxBoxSizer* txBtnSizer = new wxBoxSizer(wxHORIZONTAL);
     m_btnTxLevelMM = new wxButton(m_txLevelBox, wxID_ANY, _("<<"), wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
@@ -878,7 +907,7 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     rightSizer->Add(m_txLevelBox, 0, static_cast<int>(wxALL) | static_cast<int>(wxEXPAND), 2);
 
     // Mic/Speaker Level slider
-    micSpeakerBox = new TintedGroupBox(m_panel, _("Speaker &Level"), wxVERTICAL);
+    micSpeakerBox = new TintedGroupBox(m_panel, _("Speaker &Level"), wxVERTICAL, 7);
 
     // Sliders are integer values, so we're multiplying min/max by 10 here to allow 1 decimal precision.
     m_sliderMicSpkrLevel = new wxSlider(micSpeakerBox, wxID_ANY, 0, -200, 200, wxDefaultPosition, wxDefaultSize, wxSL_AUTOTICKS);
@@ -922,7 +951,7 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     //=====================================================
     // Control Toggles box
     //=====================================================
-    TintedGroupBox* controlBox = new TintedGroupBox(m_panel, _("Control"), wxVERTICAL);
+    controlBox = new TintedGroupBox(m_panel, _("Control"), wxVERTICAL);
 
     //-------------------------------
     // Stop/Stop signal processing (rx and tx)
