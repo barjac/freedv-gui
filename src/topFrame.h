@@ -100,6 +100,7 @@ class TintedGroupBox : public wxPanel
 {
     public:
         TintedGroupBox(wxWindow* parent, const wxString& title, wxOrientation orientation);
+        ~TintedGroupBox();
 
         virtual void SetLabel(const wxString& label) override;
         virtual wxString GetLabel() const override;
@@ -114,6 +115,14 @@ class TintedGroupBox : public wxPanel
 // Returns the same tinted "card" background colour used by TintedGroupBox,
 // for other controls (e.g. plot graticule label margins) that want to match.
 wxColour GroupBoxBackgroundColour();
+
+// Sets the tint colour/strength used by GroupBoxBackgroundColour() (persisted
+// via the Display options tab). RefreshGroupBoxTints() then re-applies the
+// resulting colour to every currently-live TintedGroupBox so the change is
+// visible immediately, without needing a restart.
+void SetGroupBoxTint(const wxColour& colour, int percent);
+void RefreshGroupBoxTints();
+
 
 ///////////////////////////////////////////////////////////////////////////////
 /// Class TopFrame

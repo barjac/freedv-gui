@@ -114,6 +114,8 @@ FreeDVConfiguration::FreeDVConfiguration()
     , showReportingBox("/UI/ShowReportingBox", true)
     , showTxAttenuationBox("/UI/ShowTxAttenuationBox", true)
     , showSpeakerLevelBox("/UI/ShowSpeakerLevelBox", true)
+    , groupBoxTintColor("/UI/GroupBoxTintColor", "#0055FF")
+    , groupBoxTintPercent("/UI/GroupBoxTintPercent", 20)
 {
     // empty
 }
@@ -244,6 +246,9 @@ void FreeDVConfiguration::load(wxConfigBase* config)
     load_(config, showTxAttenuationBox);
     load_(config, showSpeakerLevelBox);
 
+    load_(config, groupBoxTintColor);
+    load_(config, groupBoxTintPercent);
+
     load_(config, txAttenByBand);
     load_(config, tuneAttenByBand);
 }
@@ -335,6 +340,9 @@ void FreeDVConfiguration::save(wxConfigBase* config)
     save_(config, showReportingBox);
     save_(config, showTxAttenuationBox);
     save_(config, showSpeakerLevelBox);
+
+    save_(config, groupBoxTintColor);
+    save_(config, groupBoxTintPercent);
 
     save_(config, txAttenByBand);
     save_(config, tuneAttenByBand);
