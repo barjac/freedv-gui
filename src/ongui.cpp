@@ -43,6 +43,7 @@ extern std::atomic<bool> endingTx;
 extern std::atomic<int> g_outfifo1_empty;
 extern std::atomic<bool> g_voice_keyer_tx;
 extern paCallBackData* g_rxUserdata;
+extern std::atomic<bool> g_agcEnabled;
 
 extern std::atomic<SNDFILE*>            g_sfRecFileFromModulator;
 extern std::atomic<bool>                g_recFileFromModulator;
@@ -1500,10 +1501,25 @@ void MainFrame::togglePTT(void) {
     }
 
     // reset level gauge
+    //
+    // 0 is the right "nothing yet" starting point for every mode except
+    // TX-with-AGC-enabled: AgcStep::reset() (called as part of rebuilding
+    // the TX pipeline right around here) sets its own gain back to 0dB,
+    // not to this gauge's -8dB-mapped-to-0% end-stop. Resetting to 0
+    // there caused a spurious, misleading "climbing from empty" animation
+    // on every PTT down -- slow through the 30-70% green zone in
+    // particular, since that's deliberately the meter's slowest ballistics
+    // -- even though gain genuinely was already sitting at 0dB (50%) the
+    // whole time; nothing was actually happening to correct for.
 
-    m_maxLevel = 0;
-    m_gaugeLevel->SetValue(0);
-    
+    int levelGaugeResetValue = 0;
+    if (newTx && g_agcEnabled.load(std::memory_order_acquire))
+    {
+        levelGaugeResetValue = 50;
+    }
+    m_maxLevel = levelGaugeResetValue;
+    m_gaugeLevel->SetValue(levelGaugeResetValue);
+
     // Report TX change to registered reporters
     for (auto& obj : wxGetApp().m_reporters)
     {
