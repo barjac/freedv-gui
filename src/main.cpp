@@ -21,6 +21,7 @@
 //==========================================================================
 
 #include <algorithm>
+#include <cmath>
 #include <inttypes.h>
 #include <time.h>
 #include <fstream>
@@ -121,6 +122,11 @@ float g_snr;
 std::atomic<bool>  g_half_duplex;
 std::atomic<bool>  g_voice_keyer_tx;
 std::atomic<bool>  g_agcEnabled;
+// Live AGC gain (dB), published by AgcStep (see its gainOutputDb
+// constructor parameter) once per audio-thread execute() call. Not
+// meaningful/updated unless g_agcEnabled is also true -- AgcStep is
+// bypassed entirely otherwise, per TxRxThread.cpp's EitherOrStep wrapper.
+std::atomic<float> g_agcCurrentGainDb{0.0f};
 std::atomic<bool>  g_bwExpandEnabled;
 
 // tx/rx processing states
@@ -2153,52 +2159,97 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
         // Level Gauge -----------------------------------------------------------------------
 
         bool updated = false;
-        if (timerId == ID_TIMER_DEMOD_IN && !txState && m_RxRunning)
+        int tickPeak = 0;
+        if (timerId == ID_TIMER_DEMOD_IN && !g_tx.load(std::memory_order_relaxed) && m_RxRunning)
         {
             // receive mode - display From Radio peaks
+            // Note: txState is a per-call local only populated when timerId
+            // is ID_TIMER_UPDATE_OTHER/ID_TIMER_SNR, so it's stale (always
+            // false) here -- read g_tx directly instead, otherwise this
+            // branch also fires during TX and stomps the TX mic reading.
             // peak from this DT sampling period
-            int maxDemodIn = 0;
             for(int i=0; i<WAVEFORM_PLOT_BUF; i++)
             {
-                if (maxDemodIn < abs(demodInPlotSamples[i]))
+                if (tickPeak < abs(demodInPlotSamples[i]))
                 {
-                    maxDemodIn = abs(demodInPlotSamples[i]);
+                    tickPeak = abs(demodInPlotSamples[i]);
                 }
             }
 
-            // peak from last second
-            if (maxDemodIn > m_maxLevel)
-                m_maxLevel = maxDemodIn;
+            // Target-range marker is TX-only.
+            if (m_levelTargetMarkerActive)
+            {
+                m_levelTargetMarkerActive = false;
+                m_levelTargetMarker->Refresh();
+            }
 
             updated = true;
         }
         else if (timerId == ID_TIMER_SPEECH_IN)
         {
-            // transmit mode - display From Mic peaks
+            // transmit mode - display true mic drive (pre-AGC/EQ), same tap
+            // point PR #1464 already introduced for this same reason.
 
             // peak from this DT sampling period
-            int maxSpeechIn = 0;
             for(int i=0; i<WAVEFORM_PLOT_BUF; i++)
             {
-                if (maxSpeechIn < abs(speechInPlotSamplesBeforeEQ[i]))
+                if (tickPeak < abs(speechInPlotSamplesBeforeEQ[i]))
                 {
-                    maxSpeechIn = abs(speechInPlotSamplesBeforeEQ[i]);
+                    tickPeak = abs(speechInPlotSamplesBeforeEQ[i]);
                 }
             }
 
-            // peak from last second
-            if (maxSpeechIn > m_maxLevel)
-                m_maxLevel = maxSpeechIn;
+            if (!m_levelTargetMarkerActive)
+            {
+                m_levelTargetMarkerActive = true;
+                m_levelTargetMarker->Refresh();
+            }
 
            updated = true;
         }
 
         if (updated)
         {
-            // Peak Reading meter: updates peaks immediately, then slowly decays
-            int maxScaled = m_maxLevel == 0 ? -LEVEL_GAUGE_MIN_DB : 20 * std::log10((float)m_maxLevel/32767.0); // log(0) is undefined
-            m_gaugeLevel->SetValue(std::max(-LEVEL_GAUGE_MIN_DB, maxScaled) + LEVEL_GAUGE_MIN_DB); // 1/32767 -> -30dB
-            m_maxLevel *= LEVEL_BETA;
+            // 100% maps to LEVEL_METER_REFERENCE_DB, not true 0dBFS -- see
+            // that constant's comment in defines.h for why.
+            static const float levelMeterRefAmplitude = 32767.0f * powf(10.0f, (float)LEVEL_METER_REFERENCE_DB / 20.0f);
+
+            // Adaptive time constant (see defines.h): slow through the
+            // acceptable TARGET_LOW..HIGH_PCT range, fast outside
+            // RAMP_LOW..HIGH_PCT, ramping linearly between. Keyed off the
+            // meter's own previous reading (not tickPeak) so the ramp
+            // itself can't flicker tick-to-tick right at a boundary.
+            float prevPct = 100.0f * ((float)m_maxLevel / levelMeterRefAmplitude);
+            float tau;
+            if (prevPct <= LEVEL_METER_RAMP_LOW_PCT)
+            {
+                tau = LEVEL_METER_FAST_LOW_TIME_CONSTANT_SEC;
+            }
+            else if (prevPct >= LEVEL_METER_RAMP_HIGH_PCT)
+            {
+                tau = LEVEL_METER_FAST_HIGH_TIME_CONSTANT_SEC;
+            }
+            else if (prevPct < LEVEL_METER_TARGET_LOW_PCT)
+            {
+                float frac = (prevPct - LEVEL_METER_RAMP_LOW_PCT) / (float)(LEVEL_METER_TARGET_LOW_PCT - LEVEL_METER_RAMP_LOW_PCT);
+                tau = LEVEL_METER_FAST_LOW_TIME_CONSTANT_SEC + frac * (LEVEL_METER_TIME_CONSTANT_SEC - LEVEL_METER_FAST_LOW_TIME_CONSTANT_SEC);
+            }
+            else if (prevPct > LEVEL_METER_TARGET_HIGH_PCT)
+            {
+                float frac = (LEVEL_METER_RAMP_HIGH_PCT - prevPct) / (float)(LEVEL_METER_RAMP_HIGH_PCT - LEVEL_METER_TARGET_HIGH_PCT);
+                tau = LEVEL_METER_FAST_HIGH_TIME_CONSTANT_SEC + frac * (LEVEL_METER_TIME_CONSTANT_SEC - LEVEL_METER_FAST_HIGH_TIME_CONSTANT_SEC);
+            }
+            else
+            {
+                tau = LEVEL_METER_TIME_CONSTANT_SEC;
+            }
+
+            float levelMeterAlpha = 1.0f - expf(-(float)DT / tau);
+            m_maxLevel += ((float)tickPeak - m_maxLevel) * levelMeterAlpha;
+
+            int maxScaled = (int)(100.0 * ((float)m_maxLevel/levelMeterRefAmplitude));
+            maxScaled = std::min(maxScaled, 100);
+            m_gaugeLevel->SetValue(maxScaled);
         }
     }
 }
