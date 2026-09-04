@@ -2158,8 +2158,18 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
     {
         // Level Gauge -----------------------------------------------------------------------
 
+        // 100% maps to LEVEL_METER_REFERENCE_DB, not true 0dBFS -- see
+        // that constant's comment in defines.h for why.
+        static const float levelMeterRefAmplitude = 32767.0f * powf(10.0f, (float)LEVEL_METER_REFERENCE_DB / 20.0f);
+
+        // m_maxLevel/tickPct both work in gauge percentage (0-100) directly
+        // now, not raw sample amplitude -- needed so the AGC gain branch
+        // below (bipolar dB, unrelated to amplitude) can share the same
+        // adaptive-tau EMA machinery as the peak-based branches. Each
+        // branch converts its own domain (amplitude or dB) to a percentage
+        // itself; everything past that point is domain-agnostic.
         bool updated = false;
-        int tickPeak = 0;
+        float tickPct = 0.0f;
         if (timerId == ID_TIMER_DEMOD_IN && !g_tx.load(std::memory_order_relaxed) && m_RxRunning)
         {
             // receive mode - display From Radio peaks
@@ -2168,6 +2178,7 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
             // false) here -- read g_tx directly instead, otherwise this
             // branch also fires during TX and stomps the TX mic reading.
             // peak from this DT sampling period
+            int tickPeak = 0;
             for(int i=0; i<WAVEFORM_PLOT_BUF; i++)
             {
                 if (tickPeak < abs(demodInPlotSamples[i]))
@@ -2175,6 +2186,7 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
                     tickPeak = abs(demodInPlotSamples[i]);
                 }
             }
+            tickPct = 100.0f * ((float)tickPeak / levelMeterRefAmplitude);
 
             // Target-range marker is TX-only.
             if (m_levelTargetMarkerActive)
@@ -2187,16 +2199,40 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
         }
         else if (timerId == ID_TIMER_SPEECH_IN)
         {
-            // transmit mode - display true mic drive (pre-AGC/EQ), same tap
-            // point PR #1464 already introduced for this same reason.
-
-            // peak from this DT sampling period
-            for(int i=0; i<WAVEFORM_PLOT_BUF; i++)
+            if (g_agcEnabled.load(std::memory_order_acquire))
             {
-                if (tickPeak < abs(speechInPlotSamplesBeforeEQ[i]))
+                // AGC gain meter test (bcj-agc-gain-meter): bipolar, 50% =
+                // 0dB, +/-AGC_METER_RANGE_DB full scale (see defines.h for
+                // why the existing green target zone doesn't need its own
+                // separate constant here). Deliberately NOT smoothed any
+                // further by anything beyond the shared adaptive-tau EMA
+                // below -- AgcStep's own attack/release already did the
+                // real smoothing on this value before it ever got here.
+                //
+                // Inverted (higher gain -> LOWER %, not higher): this same
+                // gauge has always meant "more fill = louder" for every
+                // other mode it displays, so a naive direct mapping (more
+                // gain = more fill) read backwards against that established
+                // convention -- more gain actually means a quieter input,
+                // so it should show as less fill, matching "louder input
+                // needs less correction = more fill" instead.
+                float gainDb = g_agcCurrentGainDb.load(std::memory_order_acquire);
+                tickPct = 50.0f - (gainDb / AGC_METER_RANGE_DB) * 50.0f;
+            }
+            else
+            {
+                // AGC off -- fall back to true mic drive (pre-AGC/EQ), same
+                // tap point PR #1464 introduced for this same reason. An
+                // AGC gain reading wouldn't mean anything with AGC bypassed.
+                int tickPeak = 0;
+                for(int i=0; i<WAVEFORM_PLOT_BUF; i++)
                 {
-                    tickPeak = abs(speechInPlotSamplesBeforeEQ[i]);
+                    if (tickPeak < abs(speechInPlotSamplesBeforeEQ[i]))
+                    {
+                        tickPeak = abs(speechInPlotSamplesBeforeEQ[i]);
+                    }
                 }
+                tickPct = 100.0f * ((float)tickPeak / levelMeterRefAmplitude);
             }
 
             if (!m_levelTargetMarkerActive)
@@ -2210,16 +2246,14 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
 
         if (updated)
         {
-            // 100% maps to LEVEL_METER_REFERENCE_DB, not true 0dBFS -- see
-            // that constant's comment in defines.h for why.
-            static const float levelMeterRefAmplitude = 32767.0f * powf(10.0f, (float)LEVEL_METER_REFERENCE_DB / 20.0f);
+            tickPct = std::max(0.0f, std::min(100.0f, tickPct));
 
             // Adaptive time constant (see defines.h): slow through the
             // acceptable TARGET_LOW..HIGH_PCT range, fast outside
             // RAMP_LOW..HIGH_PCT, ramping linearly between. Keyed off the
-            // meter's own previous reading (not tickPeak) so the ramp
-            // itself can't flicker tick-to-tick right at a boundary.
-            float prevPct = 100.0f * ((float)m_maxLevel / levelMeterRefAmplitude);
+            // meter's own previous reading (not this tick's raw value) so
+            // the ramp itself can't flicker tick-to-tick right at a boundary.
+            float prevPct = m_maxLevel;
             float tau;
             if (prevPct <= LEVEL_METER_RAMP_LOW_PCT)
             {
@@ -2245,10 +2279,10 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
             }
 
             float levelMeterAlpha = 1.0f - expf(-(float)DT / tau);
-            m_maxLevel += ((float)tickPeak - m_maxLevel) * levelMeterAlpha;
+            m_maxLevel += (tickPct - m_maxLevel) * levelMeterAlpha;
 
-            int maxScaled = (int)(100.0 * ((float)m_maxLevel/levelMeterRefAmplitude));
-            maxScaled = std::min(maxScaled, 100);
+            int maxScaled = (int)m_maxLevel;
+            maxScaled = std::max(0, std::min(maxScaled, 100));
             m_gaugeLevel->SetValue(maxScaled);
         }
     }
