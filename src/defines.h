@@ -156,6 +156,15 @@
 #define LEVEL_METER_TARGET_LOW_PCT  30
 #define LEVEL_METER_TARGET_HIGH_PCT 70
 
+// AGC gain meter test (bcj-agc-gain-meter): when AGC is enabled, the TX
+// Level gauge shows AgcStep's live gain instead of raw mic peak, bipolar
+// around 50% = 0dB. +/-8dB full scale means the existing
+// LEVEL_METER_TARGET_LOW/HIGH_PCT green zone (30-70%, unmodified) lands
+// at +/-3.2dB either side of 0dB -- reused as-is as the "AGC near unity,
+// mic level well set" sweet-spot indicator, no separate constant needed
+// for that part.
+#define AGC_METER_RANGE_DB 8.0
+
 // TX Attenuation (0.1 dB increments)
 #define TX_ATTENUATION_MIN (-300) /* -30 dB */
 #define TX_ATTENUATION_MAX (0)
