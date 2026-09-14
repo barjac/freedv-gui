@@ -37,10 +37,6 @@ using namespace std::chrono_literals;
 
 #include "freedv_sanitizers.h"
 
-// WebRTC uses FS, which is defined in defines.h. Thus, it needs to be included
-// first.
-#include "AgcStep.h"
-
 // This forces us to use freedv-gui's version rather than another one.
 // TBD -- may not be needed once we fully switch over to the audio pipeline.
 #include "../defines.h"
@@ -52,6 +48,8 @@ using namespace std::chrono_literals;
 #include "EitherOrStep.h"
 #include "RNNoiseStep.h"
 #include "EqualizerStep.h"
+#include "LevelerStep.h"
+#include "CompressorLimiterStep.h"
 #include "ResamplePlotStep.h"
 #include "ResampleStep.h"
 #include "TapStep.h"
@@ -63,6 +61,8 @@ using namespace std::chrono_literals;
 #include "LinkStep.h"
 #include "BeepStep.h"
 #include "MixStep.h"
+
+#include "util/DiagnosticCsvLogger.h"
 
 #include "util/logging/ulog.h"
 #include "os/os_interface.h"
@@ -210,22 +210,9 @@ void TxRxThread::initializePipeline_()
             eitherOrBypassRNNoise);
         pipeline_->appendPipelineStep(eitherOrRNNoiseStep);
 
-        // AGC step (optional)
-        auto eitherOrProcessAgc = new AudioPipeline(inputSampleRate_, inputSampleRate_);
-        auto eitherOrBypassAgc = new AudioPipeline(inputSampleRate_, inputSampleRate_);
-
-        auto agcStep = new AgcStep(inputSampleRate_);
-        eitherOrProcessAgc->appendPipelineStep(agcStep);
-
-        auto eitherOrAgcStep = new EitherOrStep(
-            +[]() FREEDV_NONBLOCKING { return g_agcEnabled.load(std::memory_order_acquire); },
-            eitherOrProcessAgc,
-            eitherOrBypassAgc);
-        pipeline_->appendPipelineStep(eitherOrAgcStep); 
-
         // Equalizer step (optional based on filter state)
         auto equalizerStep = new EqualizerStep(
-            inputSampleRate_, 
+            inputSampleRate_,
             &g_rxUserdata->micInEQEnable,
             &g_rxUserdata->sbqMicInBass,
             &g_rxUserdata->sbqMicInMid,
@@ -233,7 +220,59 @@ void TxRxThread::initializePipeline_()
             &g_rxUserdata->sbqMicInVol,
             g_rxUserdata->micEqLock);
         pipeline_->appendPipelineStep(equalizerStep);
-        
+
+        // Loudness leveler + compressor/limiter (optional based on filter
+        // state). Replaces the old single AgcStep, which used
+        // WebRtcAgc_Process as a "limiter" that turned out to be a
+        // hardcoded ~3:1 compressor with hidden makeup gain, not a real
+        // limiter -- see LevelerStep.h/CompressorLimiterStep.h. Both share
+        // one DiagnosticCsvLogger (diagnostic-only, no-op unless the
+        // backend was built with -DENABLE_AUDIO_DIAG_LOGGING=ON) so their
+        // ~10ms sub-chunk rows stay time-aligned in ~/agc_diag.csv for
+        // live A/B tuning. The leveler pulls the limiter's measured output
+        // loudness via a feedback callback -- construct the limiter first.
+        //
+        // NOTE (rebase onto f0a31f75, pre-upstream-reorder): on this older
+        // base, Equalizer was originally constructed *after* AGC. Moved it
+        // ahead of the leveler/limiter here to match the spec's NR+EQ-
+        // before-leveler order -- the fresh origin/v3.0-dev tip this branch
+        // was first based on had already reordered EQ before AGC upstream
+        // (independently, as part of the commits this rebase now excludes),
+        // which is why an earlier pass at this file found no reorder was
+        // needed; on this older base it genuinely is.
+        auto eitherOrProcessAgc = new AudioPipeline(inputSampleRate_, inputSampleRate_);
+        auto eitherOrBypassAgc = new AudioPipeline(inputSampleRate_, inputSampleRate_);
+
+        auto agcDiagLogger = std::make_shared<DiagnosticCsvLogger>();
+        auto compressorLimiterStep = new CompressorLimiterStep(inputSampleRate_, agcDiagLogger);
+        auto levelerStep = new LevelerStep(
+            inputSampleRate_,
+            +[]() FREEDV_NONBLOCKING { return CompressorLimiterStep::getLastOutputLoudnessLufs(); },
+            agcDiagLogger);
+        eitherOrProcessAgc->appendPipelineStep(levelerStep);
+        eitherOrProcessAgc->appendPipelineStep(compressorLimiterStep);
+
+        auto eitherOrAgcStep = new EitherOrStep(
+            +[]() FREEDV_NONBLOCKING { return g_agcEnabled.load(std::memory_order_acquire); },
+            eitherOrProcessAgc,
+            eitherOrBypassAgc);
+        pipeline_->appendPipelineStep(eitherOrAgcStep);
+
+        // Resample for plot step (after the leveler/compressor-limiter --
+        // matches the spec's request that the displayed/measured "From
+        // mic" signal be the fully-processed output, not an intermediate
+        // stage).
+        auto resampleForPlotStepAfterAGC = new ResampleForPlotStep(&g_plotSpeechInFifoAfterAGC);
+        auto resampleForPlotPipelineAfterAGC = new AudioPipeline(inputSampleRate_, resampleForPlotStepAfterAGC->getOutputSampleRate());
+#if defined(ENABLE_FASTER_PLOTS)
+        auto resampleForPlotResamplerAfterAGC = new ResampleStep(inputSampleRate_, resampleForPlotStepAfterAGC->getInputSampleRate(), true); // need to create manually to get access to "plot only" optimizations
+        resampleForPlotPipelineAfterAGC->appendPipelineStep(resampleForPlotResamplerAfterAGC);
+#endif // defined(ENABLE_FASTER_PLOTS)
+        resampleForPlotPipelineAfterAGC->appendPipelineStep(resampleForPlotStepAfterAGC);
+
+        auto resampleForPlotTapAfterAGC = new TapStep(inputSampleRate_, resampleForPlotPipelineAfterAGC);
+        pipeline_->appendPipelineStep(resampleForPlotTapAfterAGC);
+
         // Take TX audio post-equalizer and send it to RX for possible monitoring use.
         if (equalizedMicAudioLink_ != nullptr)
         {
