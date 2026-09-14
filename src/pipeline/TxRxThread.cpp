@@ -258,20 +258,13 @@ void TxRxThread::initializePipeline_()
             eitherOrBypassAgc);
         pipeline_->appendPipelineStep(eitherOrAgcStep);
 
-        // Resample for plot step (after the leveler/compressor-limiter --
-        // matches the spec's request that the displayed/measured "From
-        // mic" signal be the fully-processed output, not an intermediate
-        // stage).
-        auto resampleForPlotStepAfterAGC = new ResampleForPlotStep(&g_plotSpeechInFifoAfterAGC);
-        auto resampleForPlotPipelineAfterAGC = new AudioPipeline(inputSampleRate_, resampleForPlotStepAfterAGC->getOutputSampleRate());
-#if defined(ENABLE_FASTER_PLOTS)
-        auto resampleForPlotResamplerAfterAGC = new ResampleStep(inputSampleRate_, resampleForPlotStepAfterAGC->getInputSampleRate(), true); // need to create manually to get access to "plot only" optimizations
-        resampleForPlotPipelineAfterAGC->appendPipelineStep(resampleForPlotResamplerAfterAGC);
-#endif // defined(ENABLE_FASTER_PLOTS)
-        resampleForPlotPipelineAfterAGC->appendPipelineStep(resampleForPlotStepAfterAGC);
-
-        auto resampleForPlotTapAfterAGC = new TapStep(inputSampleRate_, resampleForPlotPipelineAfterAGC);
-        pipeline_->appendPipelineStep(resampleForPlotTapAfterAGC);
+        // Note: this base's plot tap is the single `resampleForPlotStep` /
+        // `g_plotSpeechInFifo` block further down (after the
+        // equalizedMicAudioLink_ tap below), positioned after the whole
+        // processing chain including the leveler/limiter -- matches the
+        // spec's "measure the fully-processed output" intent already,
+        // without needing the split before/after-AGC tap machinery that
+        // exists on newer origin/v3.0-dev (this base predates it).
 
         // Take TX audio post-equalizer and send it to RX for possible monitoring use.
         if (equalizedMicAudioLink_ != nullptr)
