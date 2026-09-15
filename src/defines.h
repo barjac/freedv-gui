@@ -103,11 +103,12 @@
 #define FROM_MIC_MAX         0.8
 
 // Decay rate for the Level meter, applied once per GUI update (every DT sec).
-// Target: -12 dB/sec.
-//   20*log10(LEVEL_BETA) = -12 * DT
-//   LEVEL_BETA = 10^(-12*DT/20) = 10^(-0.06) ≈ 0.871   (for DT = 0.10)
-// => -1.20 dB per timer fire; the 30 dB gauge range fully decays in 2.5 s.
-#define LEVEL_DECAY_DB_PER_SEC 12.0
+// Target: -6 dB/sec (Barry, 2026-09-16: upstream's original -12dB/sec fell
+// back too fast to comfortably watch).
+//   20*log10(LEVEL_BETA) = -6 * DT
+//   LEVEL_BETA = 10^(-6*DT/20) = 10^(-0.03) ≈ 0.933   (for DT = 0.10)
+// => -0.60 dB per timer fire; the 30 dB gauge range fully decays in 5 s.
+#define LEVEL_DECAY_DB_PER_SEC 6.0
 #define LEVEL_BETA (std::pow(10.0, -LEVEL_DECAY_DB_PER_SEC * DT / 20.0))
 
 // TX Attenuation (0.1 dB increments)
