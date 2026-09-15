@@ -152,28 +152,6 @@ void TxRxThread::initializePipeline_()
     {
         pipeline_ = std::make_unique<AudioPipeline>(inputSampleRate_, outputSampleRate_);
 
-        // Record from mic step (optional)
-        auto recordMicStep = new RecordStep(
-            inputSampleRate_, 
-            []() { return g_sfRecMicFile; }, 
-            [](int) {
-                // Recording stops when the user explicitly tells us to,
-                // no action required here.
-            }
-        );
-        auto recordMicPipeline = new AudioPipeline(inputSampleRate_, inputSampleRate_);
-        recordMicPipeline->appendPipelineStep(recordMicStep);
-        
-        auto recordMicTap = new TapStep(inputSampleRate_, recordMicPipeline);
-        auto bypassRecordMic = new AudioPipeline(inputSampleRate_, inputSampleRate_);
-        
-        auto eitherOrRecordMic = new EitherOrStep(
-            +[]() FREEDV_NONBLOCKING { return (g_recVoiceKeyerFile || g_recFileFromMic) && (g_sfRecMicFile != NULL); },
-            recordMicTap,
-            bypassRecordMic
-        );
-        pipeline_->appendPipelineStep(eitherOrRecordMic);
-        
         // Mic In playback step (optional)
         auto eitherOrBypassPlay = new AudioPipeline(inputSampleRate_, inputSampleRate_);
         auto eitherOrPlayMicIn = new AudioPipeline(inputSampleRate_, inputSampleRate_);
@@ -225,6 +203,36 @@ void TxRxThread::initializePipeline_()
             eitherOrProcessRNNoise,
             eitherOrBypassRNNoise);
         pipeline_->appendPipelineStep(eitherOrRNNoiseStep);
+
+        // Record from mic step (optional). Deliberately placed right after
+        // RNNoise (Barry, 2026-09-15) so "Record new voice keyer message"/
+        // "Record from Mic" capture noise-reduced audio when RNNoise is on,
+        // rather than the completely raw/unprocessed mic signal this used
+        // to tap at the very top of the pipeline -- useful for making clean
+        // test clips without a separate noise-reduction utility. Still
+        // before EQ/leveler/limiter, so it doesn't bake in any level-
+        // shaping that would work against using these clips for later
+        // controlled A/B testing (e.g. agc_test_clip_play.sh).
+        auto recordMicStep = new RecordStep(
+            inputSampleRate_,
+            []() { return g_sfRecMicFile; },
+            [](int) {
+                // Recording stops when the user explicitly tells us to,
+                // no action required here.
+            }
+        );
+        auto recordMicPipeline = new AudioPipeline(inputSampleRate_, inputSampleRate_);
+        recordMicPipeline->appendPipelineStep(recordMicStep);
+
+        auto recordMicTap = new TapStep(inputSampleRate_, recordMicPipeline);
+        auto bypassRecordMic = new AudioPipeline(inputSampleRate_, inputSampleRate_);
+
+        auto eitherOrRecordMic = new EitherOrStep(
+            +[]() FREEDV_NONBLOCKING { return (g_recVoiceKeyerFile || g_recFileFromMic) && (g_sfRecMicFile != NULL); },
+            recordMicTap,
+            bypassRecordMic
+        );
+        pipeline_->appendPipelineStep(eitherOrRecordMic);
 
         // Equalizer step (optional based on filter state)
         auto equalizerStep = new EqualizerStep(
