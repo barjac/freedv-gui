@@ -90,7 +90,8 @@ extern std::atomic<bool> g_playFileToMicIn;
 extern int g_sfTxFs;
 extern bool g_loopPlayFileToMicIn;
 extern std::atomic<float> g_TxFreqOffsetHz;
-extern GenericFIFO<short> g_plotSpeechInFifo;
+extern GenericFIFO<short> g_plotSpeechInFifoBeforeEQ;
+extern GenericFIFO<short> g_plotSpeechInFifoAfterAGC;
 extern GenericFIFO<short> g_plotDemodInFifo;
 extern GenericFIFO<short> g_plotSpeechOutFifo;
 extern int g_txLevel;
@@ -196,7 +197,22 @@ void TxRxThread::initializePipeline_()
             eitherOrPlayMicIn,
             eitherOrBypassPlay);
         pipeline_->appendPipelineStep(eitherOrPlayStep);
-        
+
+        // Resample for plot step (before equalization) -- feeds the Level
+        // gauge's TX reading (see MainFrame::OnTimer()), which per PR #1464
+        // is deliberately taken before EQ/leveler/limiter so it reflects
+        // true mic drive rather than the already-processed signal.
+        auto resampleForPlotStepBeforeEQ = new ResampleForPlotStep(&g_plotSpeechInFifoBeforeEQ);
+        auto resampleForPlotPipelineBeforeEQ = new AudioPipeline(inputSampleRate_, resampleForPlotStepBeforeEQ->getOutputSampleRate());
+#if defined(ENABLE_FASTER_PLOTS)
+        auto resampleForPlotResamplerBeforeEQ = new ResampleStep(inputSampleRate_, resampleForPlotStepBeforeEQ->getInputSampleRate(), true); // need to create manually to get access to "plot only" optimizations
+        resampleForPlotPipelineBeforeEQ->appendPipelineStep(resampleForPlotResamplerBeforeEQ);
+#endif // defined(ENABLE_FASTER_PLOTS)
+        resampleForPlotPipelineBeforeEQ->appendPipelineStep(resampleForPlotStepBeforeEQ);
+
+        auto resampleForPlotTapBeforeEQ = new TapStep(inputSampleRate_, resampleForPlotPipelineBeforeEQ);
+        pipeline_->appendPipelineStep(resampleForPlotTapBeforeEQ);
+
         // RNNoise step (optional)
         auto eitherOrProcessRNNoise = new AudioPipeline(inputSampleRate_, inputSampleRate_);
         auto eitherOrBypassRNNoise = new AudioPipeline(inputSampleRate_, inputSampleRate_);
@@ -258,35 +274,29 @@ void TxRxThread::initializePipeline_()
             eitherOrBypassAgc);
         pipeline_->appendPipelineStep(eitherOrAgcStep);
 
-        // Note: this base's plot tap is the single `resampleForPlotStep` /
-        // `g_plotSpeechInFifo` block further down (after the
-        // equalizedMicAudioLink_ tap below), positioned after the whole
-        // processing chain including the leveler/limiter -- matches the
-        // spec's "measure the fully-processed output" intent already,
-        // without needing the split before/after-AGC tap machinery that
-        // exists on newer origin/v3.0-dev (this base predates it).
+        // Resample for plot step (after the leveler/compressor-limiter --
+        // matches PR #1464's "after AGC" tap; feeds the "From Mic" plot tab
+        // with the fully-processed output, per the spec's request).
+        auto resampleForPlotStepAfterAGC = new ResampleForPlotStep(&g_plotSpeechInFifoAfterAGC);
+        auto resampleForPlotPipelineAfterAGC = new AudioPipeline(inputSampleRate_, resampleForPlotStepAfterAGC->getOutputSampleRate());
+#if defined(ENABLE_FASTER_PLOTS)
+        auto resampleForPlotResamplerAfterAGC = new ResampleStep(inputSampleRate_, resampleForPlotStepAfterAGC->getInputSampleRate(), true); // need to create manually to get access to "plot only" optimizations
+        resampleForPlotPipelineAfterAGC->appendPipelineStep(resampleForPlotResamplerAfterAGC);
+#endif // defined(ENABLE_FASTER_PLOTS)
+        resampleForPlotPipelineAfterAGC->appendPipelineStep(resampleForPlotStepAfterAGC);
+
+        auto resampleForPlotTapAfterAGC = new TapStep(inputSampleRate_, resampleForPlotPipelineAfterAGC);
+        pipeline_->appendPipelineStep(resampleForPlotTapAfterAGC);
 
         // Take TX audio post-equalizer and send it to RX for possible monitoring use.
         if (equalizedMicAudioLink_ != nullptr)
         {
             auto micAudioPipeline = new AudioPipeline(inputSampleRate_, equalizedMicAudioLink_->getSampleRate());
             micAudioPipeline->appendPipelineStep(equalizedMicAudioLink_->getInputPipelineStep());
-        
+
             auto micAudioTap = new TapStep(inputSampleRate_, micAudioPipeline);
             pipeline_->appendPipelineStep(micAudioTap);
         }
-                
-        // Resample for plot step
-        auto resampleForPlotStep = new ResampleForPlotStep(&g_plotSpeechInFifo);
-        auto resampleForPlotPipeline = new AudioPipeline(inputSampleRate_, resampleForPlotStep->getOutputSampleRate());
-#if defined(ENABLE_FASTER_PLOTS)
-        auto resampleForPlotResampler = new ResampleStep(inputSampleRate_, resampleForPlotStep->getInputSampleRate(), true); // need to create manually to get access to "plot only" optimizations
-        resampleForPlotPipeline->appendPipelineStep(resampleForPlotResampler);
-#endif // defined(ENABLE_FASTER_PLOTS)
-        resampleForPlotPipeline->appendPipelineStep(resampleForPlotStep);
-
-        auto resampleForPlotTap = new TapStep(inputSampleRate_, resampleForPlotPipeline);
-        pipeline_->appendPipelineStep(resampleForPlotTap);
       
         // FreeDV TX step (analog leg)
         auto doubleLevelStep = new LevelAdjustStep(inputSampleRate_, +[]() FREEDV_NONBLOCKING { return (float)2.0; });

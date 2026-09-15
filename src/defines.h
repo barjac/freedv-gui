@@ -21,6 +21,8 @@
 #ifndef __FDMDV2_DEFINES__
 #define __FDMDV2_DEFINES__
 
+#include <cmath>
+
 #include "wx/wx.h"
 #include "logging/ulog.h"
 #include "pipeline/modem_stats.h"
@@ -28,6 +30,16 @@
 #define FDMDV_FCENTRE (1500)        // center of waterfall
 #define FDMDV_SCALE \
   825 /* suggested scaling for 16 bit shorts                            */
+
+// Minimum level for the Level gauge, negated.
+#define LEVEL_GAUGE_MIN_DB 30
+
+// Acceptable-range marker drawn as a thin coloured strip above the level
+// meter's gauge, in % of the gauge's own 0-100 scale (amber below, green
+// within, red above). Ported from upstream PR #1464 (log-scale meter) with
+// PR #1472's colour-band idea folded in by Mooneer at these percentages.
+#define LEVEL_METER_TARGET_LOW_PCT  30
+#define LEVEL_METER_TARGET_HIGH_PCT 85
 
 // Spectrogram and Waterfall
 
@@ -89,7 +101,14 @@
 // Level Gauge
 #define FROM_RADIO_MAX       0.8
 #define FROM_MIC_MAX         0.8
-#define LEVEL_BETA           0.99
+
+// Decay rate for the Level meter, applied once per GUI update (every DT sec).
+// Target: -12 dB/sec.
+//   20*log10(LEVEL_BETA) = -12 * DT
+//   LEVEL_BETA = 10^(-12*DT/20) = 10^(-0.06) ≈ 0.871   (for DT = 0.10)
+// => -1.20 dB per timer fire; the 30 dB gauge range fully decays in 2.5 s.
+#define LEVEL_DECAY_DB_PER_SEC 12.0
+#define LEVEL_BETA (std::pow(10.0, -LEVEL_DECAY_DB_PER_SEC * DT / 20.0))
 
 // TX Attenuation (0.1 dB increments)
 #define TX_ATTENUATION_MIN (-300) /* -30 dB */
