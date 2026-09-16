@@ -3034,6 +3034,35 @@ int FreeDVReporterDialog::FreeDVReporterDataModel::Compare (const wxDataViewItem
     auto leftData = (ReporterData*)item1.GetID();
     auto rightData = (ReporterData*)item2.GetID();
 
+    // Defensive: verify both pointers are still genuinely live entries in
+    // allReporterData_ before ever dereferencing them. wx/GTK's internal
+    // DataViewCtrl can retain a stale reference to an already-freed
+    // ReporterData* -- e.g. if a resort is still pending when
+    // deallocateRemovedItems()'s 1-second grace period expires during a
+    // burst of connection activity -- so this makes Compare() safe
+    // regardless of that timing, rather than relying on the grace period
+    // always being long enough (see freedv-gui issue #1495; that issue's
+    // fix in onUserConnectFn_ addresses one concrete cause, but this check
+    // guards the actual crash site against any such cause, present or
+    // future). Cost is a linear scan per comparison, acceptable given
+    // realistic Reporter roster sizes (tens to low hundreds of entries).
+    bool leftValid = std::any_of(allReporterData_.begin(), allReporterData_.end(),
+        [leftData](auto const& kvp) { return kvp.second == leftData; });
+    bool rightValid = std::any_of(allReporterData_.begin(), allReporterData_.end(),
+        [rightData](auto const& kvp) { return kvp.second == rightData; });
+
+    if (!leftValid || !rightValid)
+    {
+        // Treat a stale/dangling item as sorting after everything valid,
+        // consistent with the !IsOk() handling above -- never dereference it.
+        int result = 0;
+        if (!leftValid && !rightValid) result = 0;
+        else if (!leftValid) result = 1;
+        else result = -1;
+        result *= ascending ? 1 : -1;
+        return result;
+    }
+
     // Numbers are compared rather than subtracted: the difference between
     // two of them needn't fit in (or survive being rounded to) an int.
     // Frequencies more than 2^31 Hz apart came out in the wrong order.
