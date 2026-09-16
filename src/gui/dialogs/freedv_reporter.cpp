@@ -1208,23 +1208,7 @@ void FreeDVReporterDialog::FreeDVReporterDataModel::triggerResort()
     std::unique_lock<std::mutex> lk(fnQueueMtx_);
     CallbackHandler handler;
     handler.fn = [this](CallbackHandler&) {
-        std::unique_lock<std::recursive_mutex> dataLk(dataMtx_);
-
-        // Use Cleared() rather than a plain Resort(). Resort() re-sorts
-        // whatever wx/GTK's DataViewCtrl currently has cached internally --
-        // if that cache is even slightly stale or inconsistent relative to
-        // our own model state (seen repeatedly crashing inside GTK's own
-        // array-sort code, before ever reaching Compare(), even after
-        // ensuring execQueuedAction_() yields to the event loop between
-        // handlers -- see freedv-gui issue #1495), Resort() has nothing to
-        // fall back on. Cleared() instead tells the control to fully
-        // discard its cache and re-fetch everything via GetChildren(),
-        // which the control then re-sorts as it repopulates -- same
-        // end result (a correctly sorted, up to date view), but without
-        // ever trusting a potentially-stale incremental cache. Already the
-        // established pattern elsewhere in this file (onFrequencyChangeFn_,
-        // "avoids spurious errors on macOS").
-        Cleared();
+        Resort();
     };
     fnQueue_.push_back(std::move(handler));
     parent_->CallAfter(std::bind(&FreeDVReporterDialog::FreeDVReporterDataModel::execQueuedAction_, this));
