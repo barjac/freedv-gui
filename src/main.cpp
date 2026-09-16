@@ -112,6 +112,10 @@ std::atomic<float> g_txLevelScale;
 int g_tuneLevel = 0;
 std::atomic<float> g_tuneLevelScale;
 
+// Set from --disablereporter (see MainApp::OnCmdLineParsed); read once from
+// initializeFreeDVReporter_() at startup, no atomic needed.
+bool g_disableReporter = false;
+
 // GUI controls that affect rx and tx processes
 int   g_analog;
 std::atomic<bool>   g_tx;
@@ -543,6 +547,7 @@ void MainApp::OnInitCmdLine(wxCmdLineParser& parser)
     parser.AddOption("txfeaturefile", wxEmptyString, "Capture TX features from FARGAN encoder into the provided file.");
     parser.AddOption("txtime", "60", "In UT mode, the amount of time to transmit (default 60 seconds)", wxCMD_LINE_VAL_NUMBER);
     parser.AddOption("txattempts", "1", "In UT mode, the number of times to transmit (default 1)", wxCMD_LINE_VAL_NUMBER);
+    parser.AddSwitch(wxEmptyString, "disablereporter", "Disable FreeDV Reporter connection for this run only (does not change saved settings).");
 }
 
 bool MainApp::OnCmdLineParsed(wxCmdLineParser& parser)
@@ -558,6 +563,12 @@ bool MainApp::OnCmdLineParsed(wxCmdLineParser& parser)
     if (!wxApp::OnCmdLineParsed(parser))
     {
         return false;
+    }
+
+    if (parser.Found("disablereporter"))
+    {
+        log_info("FreeDV Reporter connection disabled for this run (--disablereporter)");
+        g_disableReporter = true;
     }
 
     wxString configPath;
@@ -3547,8 +3558,17 @@ bool MainFrame::validateSoundCardSetup(bool silent)
 
 void MainFrame::initializeFreeDVReporter_()
 {
+    if (g_disableReporter)
+    {
+        // --disablereporter: skip creating the reporter object/dialog and
+        // the connect() call below entirely. m_sharedReporterObject and
+        // m_reporterDialog are already null-checked at every other call
+        // site in this codebase, so leaving them unset here is safe.
+        return;
+    }
+
     bool receiveOnly = isReceiveOnly();
-    
+
     auto oldReporterObject = wxGetApp().m_sharedReporterObject;
     wxGetApp().m_sharedReporterObject =
         std::make_shared<FreeDVReporter>(
