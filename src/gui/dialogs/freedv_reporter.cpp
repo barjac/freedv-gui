@@ -3450,7 +3450,31 @@ void FreeDVReporterDialog::FreeDVReporterDataModel::onUserConnectFn_(std::string
         if (existsIter != allReporterData_.end())
         {
             // Pending deletion prior to reconnect, so go ahead and delete now.
-            delete existsIter->second;
+            //
+            // Must notify the view first if this entry was visible --
+            // otherwise wx/GTK's internal tree model can retain a stale
+            // reference to this exact pointer (e.g. via a later resort
+            // triggered by an unrelated ItemAdded for some other station),
+            // causing a use-after-free the next time it resorts. This is
+            // the real root cause of a long-standing, reproducible SIGSEGV
+            // in Compare()/ResortChildrenIfNeeded during a burst of
+            // connection activity right after connecting. Same ItemDeleted()
+            // pattern already used correctly in onUserDisconnectFn_/
+            // clearAllEntries_ -- this path was just missing it.
+            auto oldItem = existsIter->second;
+            if (oldItem->isVisible)
+            {
+#if !defined(__linux__)
+                // For non-Linux/GTK, isVisible must be set to false prior to
+                // removal to avoid referencing deallocated memory during
+                // table updates (i.e. by macOS when adjusting column widths).
+                oldItem->isVisible = false;
+#endif // !defined(__linux__)
+
+                wxDataViewItem dvi(oldItem);
+                ItemDeleted(wxDataViewItem(nullptr), dvi);
+            }
+            delete oldItem;
         }
         allReporterData_[sid] = temp;
     };
