@@ -2422,23 +2422,37 @@ double FreeDVReporterDialog::FreeDVReporterDataModel::RadiansToDegrees_(double r
 void FreeDVReporterDialog::FreeDVReporterDataModel::execQueuedAction_()
 {
     // This ensures that we handle server events in the order they're received.
+    //
+    // Deliberately processes only ONE handler per call, then re-schedules
+    // itself via CallAfter for the rest, rather than draining the whole
+    // queue in one uninterrupted loop -- during a burst of connection
+    // activity (many onUserConnectFn_/onUserDisconnectFn_ handlers queued
+    // in quick succession, often followed by a triggerResort()), running
+    // all of them back-to-back with no event-loop cycle in between gave
+    // wx/GTK's own internal DataViewCtrl bookkeeping no chance to catch up
+    // between a burst of ItemAdded()/ItemDeleted() calls and a subsequent
+    // Resort() -- observed crashing inside GTK's own children-array sort,
+    // before ever reaching Compare() (see freedv-gui issue #1495). FIFO
+    // ordering is preserved either way; only the "all in one go" timing
+    // changes.
     std::unique_lock<std::mutex> lk(fnQueueMtx_, std::defer_lock_t());
     lk.lock();
-    auto size = fnQueue_.size();
+    if (fnQueue_.empty())
+    {
+        lk.unlock();
+        return;
+    }
+
+    auto handler = std::move(fnQueue_.front());
+    fnQueue_.pop_front();
+    bool hasMore = !fnQueue_.empty();
     lk.unlock();
 
-    while(size > 0)
+    handler.fn(handler);
+
+    if (hasMore)
     {
-        lk.lock();
-        auto handler = std::move(fnQueue_[0]);
-        lk.unlock();
-
-        handler.fn(handler);
-
-        lk.lock();
-        fnQueue_.pop_front();
-        size = fnQueue_.size();
-        lk.unlock();
+        parent_->CallAfter(std::bind(&FreeDVReporterDialog::FreeDVReporterDataModel::execQueuedAction_, this));
     }
 }
 
