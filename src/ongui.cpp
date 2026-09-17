@@ -2127,7 +2127,8 @@ void MainFrame::OnResetMicSpkrLevel(wxMouseEvent&)
 
 void MainFrame::OnToggleReporterVisibility (wxCommandEvent&)
 {
-    if (m_RxRunning && !g_analog && wxGetApp().appConfiguration.reportingConfiguration.freedvReporterEnabled)
+    if (m_RxRunning && !g_analog && wxGetApp().appConfiguration.reportingConfiguration.freedvReporterEnabled &&
+        wxGetApp().m_sharedReporterObject)
     {
         if (m_reporterHidden->GetValue())
         {

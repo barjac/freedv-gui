@@ -2502,7 +2502,8 @@ void MainFrame::performFreeDVOn_()
                             wxGetApp().m_reporters.push_back(pskReporter);
                         }
                         
-                        if (wxGetApp().appConfiguration.reportingConfiguration.freedvReporterEnabled)
+                        if (wxGetApp().appConfiguration.reportingConfiguration.freedvReporterEnabled &&
+                            wxGetApp().m_sharedReporterObject)
                         {
                             wxGetApp().m_reporters.push_back(wxGetApp().m_sharedReporterObject);
 
