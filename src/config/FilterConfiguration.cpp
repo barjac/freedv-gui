@@ -28,7 +28,6 @@ DEFINE_FILTER_CONFIG_NAMES_OLD(SpkOut);
 
 FilterConfiguration::FilterConfiguration()
     : noiseReductionEnable("/Filter/speexpp_enable", true)
-    , noiseReductionStrength("/Filter/noiseReductionStrength", 1.0f)
     , agcEnabled("/Filter/agcEnable", true)
     , bwExpandEnabled("/Filter/bwExpandEnable", true)
 {
@@ -41,7 +40,6 @@ void FilterConfiguration::load(wxConfigBase* config)
     spkOutChannel.load(config);
     
     load_(config, noiseReductionEnable);
-    load_(config, noiseReductionStrength);
     load_(config, agcEnabled);
     load_(config, bwExpandEnabled);
 }
@@ -52,7 +50,6 @@ void FilterConfiguration::save(wxConfigBase* config)
     spkOutChannel.save(config);
     
     save_(config, noiseReductionEnable);
-    save_(config, noiseReductionStrength);
     save_(config, agcEnabled);
     save_(config, bwExpandEnabled);
 }

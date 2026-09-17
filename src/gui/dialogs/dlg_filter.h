@@ -81,7 +81,6 @@ class FilterDlg : public wxDialog
         void    OnBassBoost(wxScrollEvent& event);
 
         void    OnNoiseReductionEnable(wxScrollEvent& event);
-        void    OnNoiseReductionStrengthScroll(wxScrollEvent& event);
         void    OnAgcEnable(wxScrollEvent& event);
         void    OnBwExpandEnable(wxScrollEvent& event);
 
@@ -117,7 +116,6 @@ class FilterDlg : public wxDialog
         wxStaticText* m_staticTextGamma;
 
         wxCheckBox*   m_ckboxNoiseReduction;
-        wxSlider*     m_sliderNoiseReductionStrength;
         wxCheckBox*   m_ckboxAgcEnabled;
         wxCheckBox*   m_ckboxBwExpandEnabled;
         
