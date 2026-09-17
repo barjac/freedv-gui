@@ -195,7 +195,8 @@ void TxRxThread::initializePipeline_()
         auto eitherOrProcessRNNoise = new AudioPipeline(inputSampleRate_, inputSampleRate_);
         auto eitherOrBypassRNNoise = new AudioPipeline(inputSampleRate_, inputSampleRate_);
         
-        auto rnnoiseStep = new RNNoiseStep();
+        auto rnnoiseStep = new RNNoiseStep(
+            +[]() FREEDV_NONBLOCKING { return NonblockingWxGetApp().appConfiguration.filterConfiguration.noiseReductionStrength.getWithoutProcessing(); });
         eitherOrProcessRNNoise->appendPipelineStep(rnnoiseStep);
         
         auto eitherOrRNNoiseStep = new EitherOrStep(

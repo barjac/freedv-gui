@@ -84,6 +84,12 @@ public:
     FilterChannel<SpkOut> spkOutChannel;
     
     ConfigurationDataElement<bool> noiseReductionEnable;
+    // Wet/dry mix for RNNoise (0.0 = fully bypassed/dry, 1.0 = fully
+    // RNNoise-processed/wet, matching today's behavior). Lets RNNoise's
+    // suppression be dialled back for content it tends to misjudge as
+    // noise (e.g. unvoiced fricatives like "f"/"s" -- acoustically similar
+    // to wind noise). Only meaningful while noiseReductionEnable is on.
+    ConfigurationDataElement<float> noiseReductionStrength;
     ConfigurationDataElement<bool> agcEnabled;
     ConfigurationDataElement<bool> bwExpandEnabled;
     

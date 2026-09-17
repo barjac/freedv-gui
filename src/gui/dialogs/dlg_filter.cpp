@@ -94,8 +94,15 @@ FilterDlg::FilterDlg(wxWindow* parent, bool running, bool *newMicInFilter, bool 
     m_ckboxAgcEnabled = new wxCheckBox(sb_rnnoise, wxID_ANY, _("AGC"), wxDefaultPosition, wxDefaultSize, wxCHK_2STATE);
     sbSizer_rnnoise->Add(m_ckboxAgcEnabled, 0, static_cast<int>(wxALL) | wxALIGN_LEFT, 5);
     m_ckboxAgcEnabled->SetToolTip(_("Automatic gain control for microphone"));
-    
-    bSizer30->Add(sbSizer_rnnoise, 0, static_cast<int>(wxALL) | static_cast<int>(wxEXPAND), 5);   
+
+    wxStaticText* noiseReductionStrengthLabel = new wxStaticText(sb_rnnoise, wxID_ANY, _("Strength:"));
+    sbSizer_rnnoise->Add(noiseReductionStrengthLabel, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
+
+    m_sliderNoiseReductionStrength = new wxSlider(sb_rnnoise, wxID_ANY, 100, 0, 100, wxDefaultPosition, wxSize(150, -1), wxSL_HORIZONTAL);
+    sbSizer_rnnoise->Add(m_sliderNoiseReductionStrength, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
+    m_sliderNoiseReductionStrength->SetToolTip(_("Adjusts how much noise suppression is applied (100% = full effect). Lower this if noise suppression is removing wanted speech (e.g. unvoiced sounds like \"f\"/\"s\")."));
+
+    bSizer30->Add(sbSizer_rnnoise, 0, static_cast<int>(wxALL) | static_cast<int>(wxEXPAND), 5);
 
     // Speaker audio post-processing
     wxStaticBox* sbSpeakerAudio = new wxStaticBox(this, wxID_ANY, _("Speaker Audio Post-Processing"));
@@ -240,6 +247,17 @@ FilterDlg::FilterDlg(wxWindow* parent, bool running, bool *newMicInFilter, bool 
     m_ckboxAgcEnabled->Connect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxScrollEventHandler(FilterDlg::OnAgcEnable), NULL, this);
     m_ckboxBwExpandEnabled->Connect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxScrollEventHandler(FilterDlg::OnBwExpandEnable), NULL, this);
 
+    {
+        int noiseStrengthEvents[] = {
+            wxEVT_SCROLL_TOP, wxEVT_SCROLL_BOTTOM, wxEVT_SCROLL_LINEUP, wxEVT_SCROLL_LINEDOWN, wxEVT_SCROLL_PAGEUP,
+            wxEVT_SCROLL_PAGEDOWN, wxEVT_SCROLL_THUMBTRACK, wxEVT_SCROLL_THUMBRELEASE, wxEVT_SCROLL_CHANGED
+        };
+        for (auto event : noiseStrengthEvents)
+        {
+            m_sliderNoiseReductionStrength->Connect(event, wxScrollEventHandler(FilterDlg::OnNoiseReductionStrengthScroll), NULL, this);
+        }
+    }
+
     int events[] = {
         wxEVT_SCROLL_TOP, wxEVT_SCROLL_BOTTOM, wxEVT_SCROLL_LINEUP, wxEVT_SCROLL_LINEDOWN, wxEVT_SCROLL_PAGEUP, 
         wxEVT_SCROLL_PAGEDOWN, wxEVT_SCROLL_THUMBTRACK, wxEVT_SCROLL_THUMBRELEASE, wxEVT_SCROLL_CHANGED
@@ -292,7 +310,18 @@ FilterDlg::~FilterDlg()
     m_ckboxNoiseReduction->Disconnect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxScrollEventHandler(FilterDlg::OnNoiseReductionEnable), NULL, this);
     m_ckboxAgcEnabled->Disconnect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxScrollEventHandler(FilterDlg::OnAgcEnable), NULL, this);
     m_ckboxBwExpandEnabled->Disconnect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxScrollEventHandler(FilterDlg::OnBwExpandEnable), NULL, this);
-    
+
+    {
+        int noiseStrengthEvents[] = {
+            wxEVT_SCROLL_TOP, wxEVT_SCROLL_BOTTOM, wxEVT_SCROLL_LINEUP, wxEVT_SCROLL_LINEDOWN, wxEVT_SCROLL_PAGEUP,
+            wxEVT_SCROLL_PAGEDOWN, wxEVT_SCROLL_THUMBTRACK, wxEVT_SCROLL_THUMBRELEASE, wxEVT_SCROLL_CHANGED
+        };
+        for (auto event : noiseStrengthEvents)
+        {
+            m_sliderNoiseReductionStrength->Disconnect(event, wxScrollEventHandler(FilterDlg::OnNoiseReductionStrengthScroll), NULL, this);
+        }
+    }
+
     int events[] = {
         wxEVT_SCROLL_TOP, wxEVT_SCROLL_BOTTOM, wxEVT_SCROLL_LINEUP, wxEVT_SCROLL_LINEDOWN, wxEVT_SCROLL_PAGEUP, 
         wxEVT_SCROLL_PAGEDOWN, wxEVT_SCROLL_THUMBTRACK, wxEVT_SCROLL_THUMBRELEASE, wxEVT_SCROLL_CHANGED
@@ -420,7 +449,8 @@ void FilterDlg::ExchangeData(int inout)
         // RNNoise Pre-Processor
 
         m_ckboxNoiseReduction->SetValue(wxGetApp().appConfiguration.filterConfiguration.noiseReductionEnable);
-        
+        m_sliderNoiseReductionStrength->SetValue((int)(100.0f * (float)wxGetApp().appConfiguration.filterConfiguration.noiseReductionStrength));
+
         // AGC
         m_ckboxAgcEnabled->SetValue(wxGetApp().appConfiguration.filterConfiguration.agcEnabled);
         
@@ -501,7 +531,8 @@ void FilterDlg::ExchangeData(int inout)
     {
         // RNNoise Pre-Processor
         wxGetApp().appConfiguration.filterConfiguration.noiseReductionEnable = m_ckboxNoiseReduction->GetValue();
-        
+        wxGetApp().appConfiguration.filterConfiguration.noiseReductionStrength = m_sliderNoiseReductionStrength->GetValue() / 100.0f;
+
         // AGC
         wxGetApp().appConfiguration.filterConfiguration.agcEnabled = m_ckboxAgcEnabled->GetValue();
         
@@ -636,6 +667,10 @@ void FilterDlg::OnNoiseReductionEnable(wxScrollEvent&) {
     updateControlState();
 }
 
+void FilterDlg::OnNoiseReductionStrengthScroll(wxScrollEvent&) {
+    wxGetApp().appConfiguration.filterConfiguration.noiseReductionStrength = m_sliderNoiseReductionStrength->GetValue() / 100.0f;
+}
+
 void FilterDlg::OnAgcEnable(wxScrollEvent&) {
     wxGetApp().appConfiguration.filterConfiguration.agcEnabled = m_ckboxAgcEnabled->GetValue();
     g_agcEnabled.store(wxGetApp().appConfiguration.filterConfiguration.agcEnabled, std::memory_order_release); // forces immediate change at pipeline level
@@ -651,7 +686,8 @@ void FilterDlg::OnBwExpandEnable(wxScrollEvent&) {
 void FilterDlg::updateControlState()
 {
     m_ckboxAgcEnabled->Enable(true);
-    
+    m_sliderNoiseReductionStrength->Enable(m_ckboxNoiseReduction->GetValue());
+
     m_MicInBass.sliderFreq->Enable(wxGetApp().appConfiguration.filterConfiguration.micInChannel.eqEnable);
     m_MicInBass.sliderGain->Enable(wxGetApp().appConfiguration.filterConfiguration.micInChannel.eqEnable);
     
