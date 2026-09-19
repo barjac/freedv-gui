@@ -2212,16 +2212,25 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
         int available = g_levelMeterTxRawFifo.numUsed();
         int toRead = std::min(available, LEVEL_METER_TX_RAW_BUF_MAX);
         int maxSpeechIn = 0;
-        if (toRead > 0 && g_levelMeterTxRawFifo.read(speechInRawSamplesTxLevel, toRead) == 0)
+        int readResult = -2; // TEMPORARY DIAGNOSTIC (2026-09-19): -2 = never attempted (toRead was 0)
+        if (toRead > 0)
         {
-            for (int i = 0; i < toRead; i++)
+            readResult = g_levelMeterTxRawFifo.read(speechInRawSamplesTxLevel, toRead);
+            if (readResult == 0)
             {
-                if (maxSpeechIn < abs(speechInRawSamplesTxLevel[i]))
+                for (int i = 0; i < toRead; i++)
                 {
-                    maxSpeechIn = abs(speechInRawSamplesTxLevel[i]);
+                    if (maxSpeechIn < abs(speechInRawSamplesTxLevel[i]))
+                    {
+                        maxSpeechIn = abs(speechInRawSamplesTxLevel[i]);
+                    }
                 }
             }
         }
+        // TEMPORARY DIAGNOSTIC (2026-09-19): meter shows nothing at all at
+        // the slowed 100ms test rate even after fixing the buffer-cap
+        // starvation bug -- logging raw FIFO/read state to find out why.
+        log_debug("TX meter diag: available=%d toRead=%d readResult=%d maxSpeechIn=%d", available, toRead, readResult, maxSpeechIn);
 
         float instantDb = maxSpeechIn == 0 ? -LEVEL_GAUGE_MIN_DB : 20.0f * std::log10((float)maxSpeechIn/32767.0f); // log(0) is undefined
         if (instantDb > m_maxLevelDbTx)
