@@ -597,7 +597,15 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     });
     levelSizer->Add(m_levelTargetMarker, 0, static_cast<int>(wxALIGN_CENTER_HORIZONTAL));
 
-    m_gaugeLevel = new wxGauge(levelBox, wxID_ANY, LEVEL_GAUGE_MIN_DB, wxDefaultPosition, wxSize(135,15), wxGA_SMOOTH); // log scale, -30 dB to 0 dB
+    // wxGA_SMOOTH removed 2026-09-19 (Barry: TX meter flicker confirmed as
+    // a rendering/brightness artifact, not the value genuinely jumping
+    // around) -- this flag requests a "smooth, continuous" gauge style,
+    // which on GTK plausibly maps to GtkProgressBar's own animated-
+    // transition fill rendering. At the TX meter's new 40Hz update rate, a
+    // new value arriving before a prior transition animation finishes
+    // would look exactly like this. wxGA_HORIZONTAL is the same default
+    // orientation wxGA_SMOOTH was silently combined with before.
+    m_gaugeLevel = new wxGauge(levelBox, wxID_ANY, LEVEL_GAUGE_MIN_DB, wxDefaultPosition, wxSize(135,15), wxGA_HORIZONTAL); // log scale, -30 dB to 0 dB
     m_gaugeLevel->SetToolTip(_("RX: Peak level of radio's audio output, TX: Peak level of microphone audio as recorded by FreeDV (before AGC/level settings)."));
     levelSizer->Add(m_gaugeLevel, 1, static_cast<int>(wxALIGN_CENTER_HORIZONTAL)|static_cast<int>(wxALL), 10);
 
