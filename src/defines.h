@@ -171,7 +171,20 @@
 // Revert to 0.025 once this question is answered either way.
 #define LEVEL_METER_TX_REFRESH_PERIOD_SEC 0.1
 #define LEVEL_METER_TX_REFRESH_TIMER_PERIOD ((int)(LEVEL_METER_TX_REFRESH_PERIOD_SEC*1000))
-#define LEVEL_METER_TX_RAW_BUF_MAX 4096
+// Sized for LEVEL_METER_TX_REFRESH_PERIOD_SEC's *current* value, not fixed --
+// must comfortably exceed one tick's worth of raw mic samples at the sound
+// card's actual rate (96kHz worst case assumed, per original design), or
+// the per-tick read in OnTimer() (main.cpp) caps below the real per-tick
+// arrival rate, g_levelMeterTxRawFifo backs up faster than it drains, and
+// once full every new write silently fails (GenericFIFO::write() returns -1
+// and drops the sample rather than overwriting) -- the meter then reads
+// increasingly stale data forever instead of live speech, which looks like
+// "nothing on the meter" (2026-09-19, found while diagnosing the flicker
+// with the period above temporarily slowed to 0.1s). 16384 comfortably
+// covers 100ms @ 96kHz (9600) with headroom; was 4096 (sized for the
+// original 25ms period). Revert alongside the period once the flicker
+// question is answered.
+#define LEVEL_METER_TX_RAW_BUF_MAX 16384
 
 // Decay curve: the RX side's LEVEL_BETA decays the *linear* amplitude value
 // by a constant multiplicative factor every tick -- mathematically a genuine
