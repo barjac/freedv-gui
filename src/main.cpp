@@ -1737,7 +1737,23 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
     // while actually transmitting, gating this implicitly). Without an
     // explicit check here, the TX meter would show live room/mic audio
     // during RX too.
-    if (timerId == ID_TIMER_UPDATE_OTHER || timerId == ID_TIMER_SNR || timerId == ID_TIMER_LEVEL_METER_TX)
+    //
+    // ID_TIMER_DEMOD_IN also needs it -- pre-existing gap found 2026-09-19
+    // while chasing the TX meter flicker: the RX ("From Radio") gauge
+    // branch below has always gated on "!txState && m_RxRunning", but
+    // ID_TIMER_DEMOD_IN was never in this list, so txState stayed at its
+    // default `false` for every one of its own ticks regardless of the
+    // real TX/RX state -- the RX branch has always run unconditionally on
+    // its own 100ms timer. This was invisible before: in half duplex the
+    // demod input is genuinely silent during TX anyway, so the "wrongly
+    // still active" RX branch just decayed toward the same near-zero value
+    // real suppression would have shown. It only became a visible problem
+    // once the TX meter also became a genuinely live, fast-updating value
+    // sharing the same physical gauge widget (m_gaugeLevel) -- the two
+    // branches were then both calling SetValue() on it every cycle, RX's
+    // always-on branch periodically stomping the real TX level back down.
+    if (timerId == ID_TIMER_UPDATE_OTHER || timerId == ID_TIMER_SNR || timerId == ID_TIMER_LEVEL_METER_TX ||
+        timerId == ID_TIMER_DEMOD_IN)
     {
         txState = g_tx.load(std::memory_order_relaxed);
         halfDuplexState = g_half_duplex.load(std::memory_order_relaxed);
@@ -2212,25 +2228,16 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
         int available = g_levelMeterTxRawFifo.numUsed();
         int toRead = std::min(available, LEVEL_METER_TX_RAW_BUF_MAX);
         int maxSpeechIn = 0;
-        int readResult = -2; // TEMPORARY DIAGNOSTIC (2026-09-19): -2 = never attempted (toRead was 0)
-        if (toRead > 0)
+        if (toRead > 0 && g_levelMeterTxRawFifo.read(speechInRawSamplesTxLevel, toRead) == 0)
         {
-            readResult = g_levelMeterTxRawFifo.read(speechInRawSamplesTxLevel, toRead);
-            if (readResult == 0)
+            for (int i = 0; i < toRead; i++)
             {
-                for (int i = 0; i < toRead; i++)
+                if (maxSpeechIn < abs(speechInRawSamplesTxLevel[i]))
                 {
-                    if (maxSpeechIn < abs(speechInRawSamplesTxLevel[i]))
-                    {
-                        maxSpeechIn = abs(speechInRawSamplesTxLevel[i]);
-                    }
+                    maxSpeechIn = abs(speechInRawSamplesTxLevel[i]);
                 }
             }
         }
-        // TEMPORARY DIAGNOSTIC (2026-09-19): meter shows nothing at all at
-        // the slowed 100ms test rate even after fixing the buffer-cap
-        // starvation bug -- logging raw FIFO/read state to find out why.
-        log_debug("TX meter diag: available=%d toRead=%d readResult=%d maxSpeechIn=%d", available, toRead, readResult, maxSpeechIn);
 
         float instantDb = maxSpeechIn == 0 ? -LEVEL_GAUGE_MIN_DB : 20.0f * std::log10((float)maxSpeechIn/32767.0f); // log(0) is undefined
         if (instantDb > m_maxLevelDbTx)
