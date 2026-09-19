@@ -133,11 +133,39 @@
 // higher-risk change touching all of that. A dedicated timer for the TX
 // level meter alone avoids all of it.
 //
-// 25ms (4x the old shared 100ms DT-based rate) -- chosen to divide evenly
-// into a whole number of samples at WAVEFORM_PLOT_FS (10 samples exactly).
+// Second, more fundamental finding (2026-09-19, same day): giving the meter
+// its own faster *timer* wasn't enough on its own -- Barry reported the
+// meter still lagged noticeably and had started visibly flickering, and
+// that its timing "appears to coincide with the encoder input not the mic
+// audio." Traced to TxRxThread::txProcessing_(): the TX pipeline (including
+// this meter's original tap, positioned before EQ/leveler/limiter but still
+// *inside* the pipeline) only receives new data in bursts paced by RADE's
+// own modem-frame batching requirement, not continuously -- so no GUI-side
+// polling rate, however fast, can get fresher data than the pipeline
+// itself produces, and polling faster than that bursty rate just adds a
+// new artifact (jump on a real burst, decay on the empty ticks in between,
+// repeating at the burst rate -- perceived as flickering).
+//
+// Real fix: the meter now taps the raw mic audio directly in
+// MainFrame::OnTxInAudioData_() (the actual low-level sound-card callback),
+// via a second, independent FIFO write alongside the existing one that
+// feeds the real TX pipeline -- both writes use the same already-captured
+// callback data, so this can't ever steal samples from (or otherwise
+// affect) the real audio path. This is genuinely upstream of RNNoise/EQ/
+// leveler/limiter *and* of the modem's own batching, at the sound card's
+// own native, continuous callback rate -- as fast and true-to-the-mic as
+// this meter can get. LEVEL_METER_TX_RAW_BUF_MAX is a generous per-tick
+// cap (comfortably covers a 25ms window even at a 96kHz sound card, with
+// headroom), not tied to any particular configured sample rate -- the
+// actual read size is however many samples are really available each tick
+// (see g_levelMeterTxRawFifo's usage in main.cpp), since this raw feed's
+// rate no longer needs to match WAVEFORM_PLOT_FS at all.
+//
+// 25ms (4x the old shared 100ms DT-based rate) -- now genuinely meaningful
+// given the data backing it is continuous rather than bursty.
 #define LEVEL_METER_TX_REFRESH_PERIOD_SEC 0.025
 #define LEVEL_METER_TX_REFRESH_TIMER_PERIOD ((int)(LEVEL_METER_TX_REFRESH_PERIOD_SEC*1000))
-#define LEVEL_METER_TX_PLOT_BUF ((int)(LEVEL_METER_TX_REFRESH_PERIOD_SEC*WAVEFORM_PLOT_FS))
+#define LEVEL_METER_TX_RAW_BUF_MAX 4096
 
 // Decay curve: the RX side's LEVEL_BETA decays the *linear* amplitude value
 // by a constant multiplicative factor every tick -- mathematically a genuine

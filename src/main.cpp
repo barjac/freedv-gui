@@ -136,8 +136,22 @@ time_t              g_sync_time;
 constexpr int PLOT_BUF_MULTIPLIER=8;
 GenericFIFO<short>  g_plotDemodInFifo(PLOT_BUF_MULTIPLIER*WAVEFORM_PLOT_BUF);
 GenericFIFO<short>  g_plotSpeechOutFifo(PLOT_BUF_MULTIPLIER*WAVEFORM_PLOT_BUF);
+// No longer read by the TX level meter as of 2026-09-19 (see
+// g_levelMeterTxRawFifo below) -- still written by the pipeline's own
+// pre-EQ plot tap, currently unused elsewhere. Left in place rather than
+// removing the tap in the same change; a candidate for later cleanup.
 GenericFIFO<short>  g_plotSpeechInFifoBeforeEQ(PLOT_BUF_MULTIPLIER*WAVEFORM_PLOT_BUF);
 GenericFIFO<short>  g_plotSpeechInFifoAfterAGC(PLOT_BUF_MULTIPLIER*WAVEFORM_PLOT_BUF);
+
+// TX level meter's own raw mic tap (2026-09-19) -- written directly from
+// MainFrame::OnTxInAudioData_(), the actual low-level sound-card callback,
+// alongside (never instead of) its existing write to the real audio path's
+// own infifo2. Upstream of the whole TX pipeline (RNNoise/EQ/leveler/
+// limiter) and of RADE's own modem-frame batching -- see defines.h's
+// LEVEL_METER_TX_* comments for why this replaced the pipeline-based tap.
+// Capacity generous (8x the per-tick max) for scheduling-jitter headroom,
+// same multiplier convention as the plot FIFOs above.
+GenericFIFO<short>  g_levelMeterTxRawFifo(8*LEVEL_METER_TX_RAW_BUF_MAX);
 
 // Soundcard config
 int                 g_nSoundCards;
@@ -1701,7 +1715,7 @@ int MainFrame::getIdealStationsHeardColumnLength_(int col)
 //----------------------------------------------------------------
 void MainFrame::OnTimer(wxTimerEvent &evt)
 {
-    short speechInPlotSamplesBeforeEQ[LEVEL_METER_TX_PLOT_BUF];
+    short speechInRawSamplesTxLevel[LEVEL_METER_TX_RAW_BUF_MAX];
     short speechInPlotSamplesAfterAGC[WAVEFORM_PLOT_BUF];
     short speechOutPlotSamples[WAVEFORM_PLOT_BUF];
     short demodInPlotSamples[WAVEFORM_PLOT_BUF];
@@ -1716,8 +1730,14 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
         return;
     }
     
-    // Most plots don't need TX/sync state.
-    if (timerId == ID_TIMER_UPDATE_OTHER || timerId == ID_TIMER_SNR)
+    // Most plots don't need TX/sync state. ID_TIMER_LEVEL_METER_TX does,
+    // as of 2026-09-19 -- its raw mic tap (g_levelMeterTxRawFifo) captures
+    // continuously regardless of TX/RX state, unlike the old pipeline-based
+    // tap it replaced (which only ever had real content flowing through it
+    // while actually transmitting, gating this implicitly). Without an
+    // explicit check here, the TX meter would show live room/mic audio
+    // during RX too.
+    if (timerId == ID_TIMER_UPDATE_OTHER || timerId == ID_TIMER_SNR || timerId == ID_TIMER_LEVEL_METER_TX)
     {
         txState = g_tx.load(std::memory_order_relaxed);
         halfDuplexState = g_half_duplex.load(std::memory_order_relaxed);
@@ -1772,18 +1792,6 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
           }
           m_panelSpeechIn->add_new_short_samples(speechInPlotSamplesAfterAGC, WAVEFORM_PLOT_BUF, 32767);
           m_panelSpeechIn->refreshData();
-      }
-      else if (timerId == ID_TIMER_LEVEL_METER_TX)
-      {
-          // Independent, faster-refreshing TX ("From Mic") level meter --
-          // decoupled from ID_TIMER_SPEECH_IN's shared DT-based rate above
-          // (2026-09-19, see defines.h's LEVEL_METER_TX_* comments). Still
-          // the same pre-EQ/leveler/limiter tap PR #1464 established, just
-          // read here on its own faster schedule instead.
-          if (g_plotSpeechInFifoBeforeEQ.read(speechInPlotSamplesBeforeEQ, LEVEL_METER_TX_PLOT_BUF))
-          {
-              memset(speechInPlotSamplesBeforeEQ, 0, LEVEL_METER_TX_PLOT_BUF*sizeof(short));
-          }
       }
       else if (timerId == ID_TIMER_SPEECH_OUT)
       {
@@ -2186,19 +2194,32 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
         m_gaugeLevel->SetValue(std::max(-LEVEL_GAUGE_MIN_DB, maxScaled) + LEVEL_GAUGE_MIN_DB); // 1/32767 -> -30dB
         m_maxLevel *= LEVEL_BETA;
     }
-    else if (timerId == ID_TIMER_LEVEL_METER_TX)
+    else if (timerId == ID_TIMER_LEVEL_METER_TX && txState)
     {
         // Level Gauge (TX, "From Mic") ---------------------------------------------------------
         //
-        // Peaks taken before EQ/leveler/limiter, per PR #1464, so this
-        // reflects true mic drive. Own independent, faster timer and decay
-        // curve as of 2026-09-19 -- see defines.h's LEVEL_METER_TX_* comments.
+        // Reads directly from g_levelMeterTxRawFifo (the sound card's own
+        // raw mic callback, see OnTxInAudioData_()) rather than any tap
+        // inside the TX pipeline -- upstream of RNNoise/EQ/leveler/limiter
+        // *and* of RADE's own modem-frame batching, so this can't lag
+        // behind the encoder's own processing cadence. See defines.h's
+        // LEVEL_METER_TX_* comments for the full history/reasoning.
+        //
+        // Read size is whatever's actually available (capped at the
+        // generous LEVEL_METER_TX_RAW_BUF_MAX), not a fixed expected
+        // count -- this feed's rate depends on the configured sound card
+        // sample rate, which this deliberately doesn't need to know.
+        int available = g_levelMeterTxRawFifo.numUsed();
+        int toRead = std::min(available, LEVEL_METER_TX_RAW_BUF_MAX);
         int maxSpeechIn = 0;
-        for(int i=0; i<LEVEL_METER_TX_PLOT_BUF; i++)
+        if (toRead > 0 && g_levelMeterTxRawFifo.read(speechInRawSamplesTxLevel, toRead) == 0)
         {
-            if (maxSpeechIn < abs(speechInPlotSamplesBeforeEQ[i]))
+            for (int i = 0; i < toRead; i++)
             {
-                maxSpeechIn = abs(speechInPlotSamplesBeforeEQ[i]);
+                if (maxSpeechIn < abs(speechInRawSamplesTxLevel[i]))
+                {
+                    maxSpeechIn = abs(speechInRawSamplesTxLevel[i]);
+                }
             }
         }
 
@@ -2219,6 +2240,16 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
         }
 
         m_gaugeLevel->SetValue(std::max(-LEVEL_GAUGE_MIN_DB, (int)m_maxLevelDbTx) + LEVEL_GAUGE_MIN_DB);
+    }
+    else if (timerId == ID_TIMER_LEVEL_METER_TX)
+    {
+        // Not transmitting -- drain (not read/display) whatever the raw
+        // mic callback captured while we weren't looking. Without this,
+        // g_levelMeterTxRawFifo would silently build up a backlog during
+        // any RX period, and the first moments back in TX would show
+        // stale, delayed audio (working through that backlog) rather than
+        // fresh input, until it caught back up.
+        g_levelMeterTxRawFifo.reset();
     }
 }
 #endif
@@ -3736,10 +3767,17 @@ void MainFrame::OnTxInAudioData_(IAudioDevice& dev, void* data, size_t size, voi
         {
             tmpInput[i] = audioData[0];
         }
-        if (isModemRunning.load(std::memory_order_acquire) && cbData->infifo2->write(tmpInput, size)) 
+        if (isModemRunning.load(std::memory_order_acquire) && cbData->infifo2->write(tmpInput, size))
         {
             g_infifo2_full.fetch_add(1, std::memory_order_release);
         }
+
+        // TX level meter's own raw tap (2026-09-19) -- a second, independent
+        // write of the same just-captured samples, never touching infifo2's
+        // own write above or its return value, so this can't ever steal
+        // from or otherwise affect the real audio path. See defines.h's
+        // LEVEL_METER_TX_* comments and g_levelMeterTxRawFifo's own comment.
+        g_levelMeterTxRawFifo.write(tmpInput, size);
     }
 }
 
