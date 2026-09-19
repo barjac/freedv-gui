@@ -2239,7 +2239,21 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
             m_maxLevelDbTx += (-LEVEL_GAUGE_MIN_DB - m_maxLevelDbTx) * alpha;
         }
 
-        m_gaugeLevel->SetValue(std::max(-LEVEL_GAUGE_MIN_DB, (int)m_maxLevelDbTx) + LEVEL_GAUGE_MIN_DB);
+        // Barry, 2026-09-19: with the raw tap above fixing the lag, a
+        // visible flicker remained -- confirmed as a redraw/brightness
+        // artifact, not the bar's length genuinely jumping around. Root
+        // cause: SetValue() was called unconditionally every 25ms tick,
+        // even though the small per-tick decay step often doesn't move the
+        // rounded integer value at all -- if the GTK theme does any kind
+        // of highlight/fade on each explicit SetValue(), redrawing 40x/sec
+        // regardless of whether anything visibly changed would produce
+        // exactly this. Only call it when the displayed value actually
+        // changes.
+        int newGaugeValueTx = std::max(-LEVEL_GAUGE_MIN_DB, (int)m_maxLevelDbTx) + LEVEL_GAUGE_MIN_DB;
+        if (newGaugeValueTx != m_gaugeLevel->GetValue())
+        {
+            m_gaugeLevel->SetValue(newGaugeValueTx);
+        }
     }
     else if (timerId == ID_TIMER_LEVEL_METER_TX)
     {
