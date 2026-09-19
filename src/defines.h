@@ -163,7 +163,13 @@
 //
 // 25ms (4x the old shared 100ms DT-based rate) -- now genuinely meaningful
 // given the data backing it is continuous rather than bursty.
-#define LEVEL_METER_TX_REFRESH_PERIOD_SEC 0.025
+// TEMPORARY DIAGNOSTIC (2026-09-19): slowed back toward the old shared
+// 100ms rate, to isolate whether refresh rate itself is what's causing
+// the still-unexplained flicker (SetValue-guard and dropping wxGA_SMOOTH
+// both failed to fix it; RX confirmed NOT to flicker on the old rate) --
+// or whether something else in the new raw-tap code path is responsible.
+// Revert to 0.025 once this question is answered either way.
+#define LEVEL_METER_TX_REFRESH_PERIOD_SEC 0.1
 #define LEVEL_METER_TX_REFRESH_TIMER_PERIOD ((int)(LEVEL_METER_TX_REFRESH_PERIOD_SEC*1000))
 #define LEVEL_METER_TX_RAW_BUF_MAX 4096
 
