@@ -1256,6 +1256,7 @@ MainFrame::MainFrame(wxWindow *parent) : TopFrame(parent, wxID_ANY, _("FreeDV ")
     m_plotWaterfallTimer.SetOwner(this, ID_TIMER_WATERFALL);
     m_plotSpectrumTimer.SetOwner(this, ID_TIMER_SPECTRUM);
     m_plotSpeechInTimer.SetOwner(this, ID_TIMER_SPEECH_IN);
+    m_levelMeterTxTimer.SetOwner(this, ID_TIMER_LEVEL_METER_TX);
     m_plotSpeechOutTimer.SetOwner(this, ID_TIMER_SPEECH_OUT);
     m_plotDemodInTimer.SetOwner(this, ID_TIMER_DEMOD_IN);
     m_plotSNRTimer.SetOwner(this, ID_TIMER_SNR);
@@ -1640,6 +1641,7 @@ MainFrame::~MainFrame()
         m_plotWaterfallTimer.Stop();
         m_plotSpectrumTimer.Stop();
         m_plotSpeechInTimer.Stop();
+        m_levelMeterTxTimer.Stop();
         m_plotSpeechOutTimer.Stop();
         m_plotDemodInTimer.Stop();
         m_plotSNRTimer.Stop();
@@ -1699,7 +1701,7 @@ int MainFrame::getIdealStationsHeardColumnLength_(int col)
 //----------------------------------------------------------------
 void MainFrame::OnTimer(wxTimerEvent &evt)
 {
-    short speechInPlotSamplesBeforeEQ[WAVEFORM_PLOT_BUF];
+    short speechInPlotSamplesBeforeEQ[LEVEL_METER_TX_PLOT_BUF];
     short speechInPlotSamplesAfterAGC[WAVEFORM_PLOT_BUF];
     short speechOutPlotSamples[WAVEFORM_PLOT_BUF];
     short demodInPlotSamples[WAVEFORM_PLOT_BUF];
@@ -1770,10 +1772,17 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
           }
           m_panelSpeechIn->add_new_short_samples(speechInPlotSamplesAfterAGC, WAVEFORM_PLOT_BUF, 32767);
           m_panelSpeechIn->refreshData();
-
-          if (g_plotSpeechInFifoBeforeEQ.read(speechInPlotSamplesBeforeEQ, WAVEFORM_PLOT_BUF))
+      }
+      else if (timerId == ID_TIMER_LEVEL_METER_TX)
+      {
+          // Independent, faster-refreshing TX ("From Mic") level meter --
+          // decoupled from ID_TIMER_SPEECH_IN's shared DT-based rate above
+          // (2026-09-19, see defines.h's LEVEL_METER_TX_* comments). Still
+          // the same pre-EQ/leveler/limiter tap PR #1464 established, just
+          // read here on its own faster schedule instead.
+          if (g_plotSpeechInFifoBeforeEQ.read(speechInPlotSamplesBeforeEQ, LEVEL_METER_TX_PLOT_BUF))
           {
-              memset(speechInPlotSamplesBeforeEQ, 0, WAVEFORM_PLOT_BUF*sizeof(short));
+              memset(speechInPlotSamplesBeforeEQ, 0, LEVEL_METER_TX_PLOT_BUF*sizeof(short));
           }
       }
       else if (timerId == ID_TIMER_SPEECH_OUT)
@@ -2153,60 +2162,63 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
         VoiceKeyerProcessEvent(VK_DT);
     }
     
-    if (timerId == ID_TIMER_SPEECH_IN ||
-        timerId == ID_TIMER_DEMOD_IN)
+    if (timerId == ID_TIMER_DEMOD_IN && !txState && m_RxRunning)
     {
-        // Level Gauge -----------------------------------------------------------------------
+        // Level Gauge (RX, "From Radio") ------------------------------------------------------
+        //
+        // Peak Reading meter: updates peaks immediately, then slowly decays.
+        // Log scale (-LEVEL_GAUGE_MIN_DB to 0dB), ported from PR #1464 --
+        // the "too high" text warning this used to have (PR #1461 removed
+        // it upstream) is superseded by the amber/green/red target-range
+        // marker drawn just above the gauge (see topFrame.cpp). Decays the
+        // *linear* peak value by a constant factor each tick (LEVEL_BETA) --
+        // see defines.h's LEVEL_METER_TX_DECAY_TIME_CONSTANT_SEC comment for
+        // why the TX side below does this differently.
+        int maxDemodIn = 0;
+        for(int i=0; i<WAVEFORM_PLOT_BUF; i++)
+            if (maxDemodIn < abs(demodInPlotSamples[i]))
+                maxDemodIn = abs(demodInPlotSamples[i]);
 
-        bool updated = false;
-        if (timerId == ID_TIMER_DEMOD_IN && !txState && m_RxRunning)
+        if (maxDemodIn > m_maxLevel)
+            m_maxLevel = maxDemodIn;
+
+        int maxScaled = m_maxLevel == 0 ? -LEVEL_GAUGE_MIN_DB : 20 * std::log10((float)m_maxLevel/32767.0); // log(0) is undefined
+        m_gaugeLevel->SetValue(std::max(-LEVEL_GAUGE_MIN_DB, maxScaled) + LEVEL_GAUGE_MIN_DB); // 1/32767 -> -30dB
+        m_maxLevel *= LEVEL_BETA;
+    }
+    else if (timerId == ID_TIMER_LEVEL_METER_TX)
+    {
+        // Level Gauge (TX, "From Mic") ---------------------------------------------------------
+        //
+        // Peaks taken before EQ/leveler/limiter, per PR #1464, so this
+        // reflects true mic drive. Own independent, faster timer and decay
+        // curve as of 2026-09-19 -- see defines.h's LEVEL_METER_TX_* comments.
+        int maxSpeechIn = 0;
+        for(int i=0; i<LEVEL_METER_TX_PLOT_BUF; i++)
         {
-            // receive mode - display From Radio peaks
-            // peak from this DT sampling period
-            int maxDemodIn = 0;
-            for(int i=0; i<WAVEFORM_PLOT_BUF; i++)
-                if (maxDemodIn < abs(demodInPlotSamples[i]))
-                    maxDemodIn = abs(demodInPlotSamples[i]);
-
-            // peak from last second
-            if (maxDemodIn > m_maxLevel)
-                m_maxLevel = maxDemodIn;
-
-            updated = true;
-        }
-        else if (timerId == ID_TIMER_SPEECH_IN)
-        {
-            // transmit mode - display From Mic peaks (taken before EQ/leveler/
-            // limiter, per PR #1464, so this reflects true mic drive)
-
-            // peak from this DT sampling period
-            int maxSpeechIn = 0;
-            for(int i=0; i<WAVEFORM_PLOT_BUF; i++)
+            if (maxSpeechIn < abs(speechInPlotSamplesBeforeEQ[i]))
             {
-                if (maxSpeechIn < abs(speechInPlotSamplesBeforeEQ[i]))
-                {
-                    maxSpeechIn = abs(speechInPlotSamplesBeforeEQ[i]);
-                }
+                maxSpeechIn = abs(speechInPlotSamplesBeforeEQ[i]);
             }
-
-            // peak from last second
-            if (maxSpeechIn > m_maxLevel)
-                m_maxLevel = maxSpeechIn;
-
-           updated = true;
         }
 
-        if (updated)
+        float instantDb = maxSpeechIn == 0 ? -LEVEL_GAUGE_MIN_DB : 20.0f * std::log10((float)maxSpeechIn/32767.0f); // log(0) is undefined
+        if (instantDb > m_maxLevelDbTx)
         {
-            // Peak Reading meter: updates peaks immediately, then slowly decays.
-            // Log scale (-LEVEL_GAUGE_MIN_DB to 0dB), ported from PR #1464 --
-            // the "too high" text warning this used to have (PR #1461 removed
-            // it upstream) is superseded by the amber/green/red target-range
-            // marker drawn just above the gauge (see topFrame.cpp).
-            int maxScaled = m_maxLevel == 0 ? -LEVEL_GAUGE_MIN_DB : 20 * std::log10((float)m_maxLevel/32767.0); // log(0) is undefined
-            m_gaugeLevel->SetValue(std::max(-LEVEL_GAUGE_MIN_DB, maxScaled) + LEVEL_GAUGE_MIN_DB); // 1/32767 -> -30dB
-            m_maxLevel *= LEVEL_BETA;
+            // Instant attack -- a new, louder peak jumps straight to it.
+            m_maxLevelDbTx = instantDb;
         }
+        else
+        {
+            // Exponential decay applied directly to the *displayed* dB
+            // value (not the linear amplitude the RX side above uses) --
+            // visibly decelerates as it nears the gauge's floor, rather
+            // than dropping at a constant rate all the way down.
+            static const float alpha = 1.0f - std::exp(-LEVEL_METER_TX_REFRESH_PERIOD_SEC / LEVEL_METER_TX_DECAY_TIME_CONSTANT_SEC);
+            m_maxLevelDbTx += (-LEVEL_GAUGE_MIN_DB - m_maxLevelDbTx) * alpha;
+        }
+
+        m_gaugeLevel->SetValue(std::max(-LEVEL_GAUGE_MIN_DB, (int)m_maxLevelDbTx) + LEVEL_GAUGE_MIN_DB);
     }
 }
 #endif
@@ -2394,6 +2406,7 @@ void MainFrame::performFreeDVOn_()
     memset(m_callsign, 0, sizeof(m_callsign));
 
     m_maxLevel = 0;
+    m_maxLevelDbTx = -LEVEL_GAUGE_MIN_DB;
     executeOnUiThreadAndWait_([&]()
     {
         m_gaugeLevel->SetValue(0);
@@ -2563,6 +2576,7 @@ void MainFrame::performFreeDVOn_()
                     m_plotWaterfallTimer.Start(_REFRESH_TIMER_PERIOD, wxTIMER_CONTINUOUS);
                     m_plotSpectrumTimer.Start(_REFRESH_TIMER_PERIOD, wxTIMER_CONTINUOUS);
                     m_plotSpeechInTimer.Start(_REFRESH_TIMER_PERIOD, wxTIMER_CONTINUOUS);
+                    m_levelMeterTxTimer.Start(LEVEL_METER_TX_REFRESH_TIMER_PERIOD, wxTIMER_CONTINUOUS);
                     m_plotSpeechOutTimer.Start(_REFRESH_TIMER_PERIOD, wxTIMER_CONTINUOUS);
                     m_plotDemodInTimer.Start(_REFRESH_TIMER_PERIOD, wxTIMER_CONTINUOUS);
                     m_plotSNRTimer.Start(_REFRESH_TIMER_PERIOD, wxTIMER_CONTINUOUS);
@@ -2614,6 +2628,7 @@ void MainFrame::performFreeDVOff_()
         m_plotWaterfallTimer.Stop();
         m_plotSpectrumTimer.Stop();
         m_plotSpeechInTimer.Stop();
+        m_levelMeterTxTimer.Stop();
         m_plotSpeechOutTimer.Stop();
         m_plotDemodInTimer.Stop();
         m_plotSNRTimer.Stop();

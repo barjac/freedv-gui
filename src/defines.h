@@ -114,8 +114,47 @@
 //   20*log10(LEVEL_BETA) = -6 * DT
 //   LEVEL_BETA = 10^(-6*DT/20) = 10^(-0.03) ≈ 0.933   (for DT = 0.10)
 // => -0.60 dB per timer fire; the 30 dB gauge range fully decays in 5 s.
+// Still used by the RX ("From Radio") side of the shared level gauge --
+// see LEVEL_METER_TX_DECAY_TIME_CONSTANT_SEC below for the TX ("From Mic")
+// side's own, differently-shaped decay.
 #define LEVEL_DECAY_DB_PER_SEC 6.0
 #define LEVEL_BETA (std::pow(10.0, -LEVEL_DECAY_DB_PER_SEC * DT / 20.0))
+
+// TX ("From Mic") level meter: own independent refresh timer + decay curve,
+// decoupled from the RX side and from the shared DT constant (2026-09-19,
+// Barry: "the meter is still a bit jumpy... there is also quite a lag").
+//
+// Why not just lower DT: DT is a widely-shared foundational timing constant
+// -- it sizes several unrelated buffers (WAVEFORM_PLOT_BUF,
+// SCATTER_MEM_SYMS_MAX, SCATTER_EYE_MEM_ROWS, the g_avmag FIFO), drives the
+// refresh rate of every other real-time plot (waveform/scatter/eye), and is
+// used directly as a time-step unit in voicekeyer.cpp's own RX-pause/sync
+// timing logic. Speeding it up to fix just this one meter would be a broad,
+// higher-risk change touching all of that. A dedicated timer for the TX
+// level meter alone avoids all of it.
+//
+// 25ms (4x the old shared 100ms DT-based rate) -- chosen to divide evenly
+// into a whole number of samples at WAVEFORM_PLOT_FS (10 samples exactly).
+#define LEVEL_METER_TX_REFRESH_PERIOD_SEC 0.025
+#define LEVEL_METER_TX_REFRESH_TIMER_PERIOD ((int)(LEVEL_METER_TX_REFRESH_PERIOD_SEC*1000))
+#define LEVEL_METER_TX_PLOT_BUF ((int)(LEVEL_METER_TX_REFRESH_PERIOD_SEC*WAVEFORM_PLOT_FS))
+
+// Decay curve: the RX side's LEVEL_BETA decays the *linear* amplitude value
+// by a constant multiplicative factor every tick -- mathematically a genuine
+// exponential decay (the same behavior a real analog R/C meter circuit has
+// in the voltage/amplitude domain), but because the gauge display is
+// dB-scaled (logarithmic), an exponential decay in linear amplitude maps to
+// a perfectly straight, constant-slope line in dB terms -- reported as
+// "drops right down to the bottom" between words. A curve that visibly
+// *decelerates* as it nears the gauge's floor needs the exponential decay
+// applied directly to the displayed dB value instead (the opposite of what
+// a literal R/C circuit does, but closer to the requested visual behavior):
+//   displayedDb += (floorDb - displayedDb) * (1 - exp(-dt/tau))
+// 1.5s starting value reuses the "plateau" time constant from the earlier,
+// separate EMA-meter design's own live-tuned value (see
+// project_level_meter_simple_fix.md/LEVEL_METER_TIME_CONSTANT_SEC) as an
+// informed guess, not re-derived from scratch -- not yet live-tested here.
+#define LEVEL_METER_TX_DECAY_TIME_CONSTANT_SEC 1.5
 
 // TX Attenuation (0.1 dB increments)
 #define TX_ATTENUATION_MIN (-300) /* -30 dB */

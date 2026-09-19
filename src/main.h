@@ -111,6 +111,7 @@ enum {
         ID_TIMER_WATERFALL,
         ID_TIMER_SPECTRUM,
         ID_TIMER_SPEECH_IN,
+        ID_TIMER_LEVEL_METER_TX, // independent, faster-refreshing TX ("From Mic") level meter -- see defines.h
         ID_TIMER_SPEECH_OUT,
         ID_TIMER_DEMOD_IN,
         ID_TIMER_SNR,
@@ -321,6 +322,7 @@ class MainFrame : public TopFrame
         wxTimer                 m_plotSpectrumTimer;
         wxTimer                 m_plotScatterTimer;
         wxTimer                 m_plotSpeechInTimer;
+        wxTimer                 m_levelMeterTxTimer; // independent, faster TX level meter refresh -- see defines.h
         wxTimer                 m_plotSpeechOutTimer;
         wxTimer                 m_plotDemodInTimer;
         wxTimer                 m_plotSNRTimer;
@@ -560,7 +562,12 @@ class MainFrame : public TopFrame
         class OptionsDlg *optionsDlg;
 
         // level Gauge
-        float       m_maxLevel;
+        float       m_maxLevel; // RX ("From Radio") side only, as of 2026-09-19 -- see m_maxLevelDbTx for TX
+
+        // TX ("From Mic") level gauge's own displayed value, already in dB
+        // (not linear amplitude like m_maxLevel above) -- see
+        // LEVEL_METER_TX_DECAY_TIME_CONSTANT_SEC in defines.h for why.
+        float       m_maxLevelDbTx;
 
         // flags to indicate when new EQ filters need to be designed
 
