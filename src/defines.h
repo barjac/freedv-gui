@@ -38,8 +38,14 @@
 // meter's gauge, in % of the gauge's own 0-100 scale (amber below, green
 // within, red above). Ported from upstream PR #1464 (log-scale meter) with
 // PR #1472's colour-band idea folded in by Mooneer at these percentages.
+// HIGH_PCT lowered from Mooneer's 85 back to PR #1472's own original 70
+// (2026-09-19, Barry): "too lenient" at 85 (-4.5dBFS on this branch's -30
+// to 0dB log scale) -- audio could sit uncomfortably close to true
+// clipping before the meter's red zone ever warned about it. 70 (-9dBFS)
+// matches the threshold from the original EMA-meter design's own live
+// testing, before Mooneer's later log-scale port widened it.
 #define LEVEL_METER_TARGET_LOW_PCT  30
-#define LEVEL_METER_TARGET_HIGH_PCT 85
+#define LEVEL_METER_TARGET_HIGH_PCT 70
 
 // Spectrogram and Waterfall
 
