@@ -30,26 +30,32 @@ FilterConfiguration::FilterConfiguration()
     : noiseReductionEnable("/Filter/speexpp_enable", true)
     , agcEnabled("/Filter/agcEnable", true)
     , bwExpandEnabled("/Filter/bwExpandEnable", true)
+    , levelerGainDb("/Filter/levelerGainDb", 0.0f)
+    , levelerIntegralErrorDb("/Filter/levelerIntegralErrorDb", 0.0f)
 {
     // empty
 }
 
 void FilterConfiguration::load(wxConfigBase* config)
-{    
+{
     micInChannel.load(config);
     spkOutChannel.load(config);
-    
+
     load_(config, noiseReductionEnable);
     load_(config, agcEnabled);
     load_(config, bwExpandEnabled);
+    load_(config, levelerGainDb);
+    load_(config, levelerIntegralErrorDb);
 }
 
 void FilterConfiguration::save(wxConfigBase* config)
 {
     micInChannel.save(config);
     spkOutChannel.save(config);
-    
+
     save_(config, noiseReductionEnable);
     save_(config, agcEnabled);
     save_(config, bwExpandEnabled);
+    save_(config, levelerGainDb);
+    save_(config, levelerIntegralErrorDb);
 }

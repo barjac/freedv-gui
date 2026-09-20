@@ -269,11 +269,18 @@ void TxRxThread::initializePipeline_()
 
         auto agcDiagLogger = std::make_shared<DiagnosticCsvLogger>();
         auto compressorLimiterStep = new CompressorLimiterStep(inputSampleRate_, agcDiagLogger);
-        auto levelerStep = new LevelerStep(
+        // Seed from whatever the previous session's MainFrame::stopRxStream()
+        // saved (see FilterConfiguration.h's levelerGainDb/
+        // levelerIntegralErrorDb comment) -- 0.0f/0.0f (LevelerStep's own
+        // cold-start default) the first time FreeDV is ever run, or after a
+        // config reset.
+        levelerStep_ = new LevelerStep(
             inputSampleRate_,
             +[]() FREEDV_NONBLOCKING { return CompressorLimiterStep::getLastOutputLoudnessLufs(); },
-            agcDiagLogger);
-        eitherOrProcessAgc->appendPipelineStep(levelerStep);
+            agcDiagLogger,
+            NonblockingWxGetApp().appConfiguration.filterConfiguration.levelerGainDb.getWithoutProcessing(),
+            NonblockingWxGetApp().appConfiguration.filterConfiguration.levelerIntegralErrorDb.getWithoutProcessing());
+        eitherOrProcessAgc->appendPipelineStep(levelerStep_);
         eitherOrProcessAgc->appendPipelineStep(compressorLimiterStep);
 
         auto eitherOrAgcStep = new EitherOrStep(
@@ -684,6 +691,25 @@ void* TxRxThread::Entry() noexcept
 #if defined(ENABLE_PROCESSING_STATS)
     reportStats_();
 #endif // defined(ENABLE_PROCESSING_STATS)
+
+    // Persist the leveler's final gain state to config (2026-09-20) so the
+    // next session (or a later run of the app) can resume from it instead
+    // of always starting cold at 0dB -- see FilterConfiguration.h's
+    // levelerGainDb/levelerIntegralErrorDb comment. Safe to read here with
+    // no synchronization: this is the same thread that was calling
+    // execute() (which is the only thing that ever mutates this state),
+    // and the loop above has just stopped calling it. Only sets the
+    // in-memory config value -- actually flushing it to disk (a real
+    // wxConfigBase::Write()) happens on the GUI thread afterward, in
+    // MainFrame::stopRxStream() once this thread has been joined, matching
+    // how every other config save in this codebase is done from the GUI
+    // thread.
+    if (levelerStep_ != nullptr)
+    {
+        NonblockingWxGetApp().appConfiguration.filterConfiguration.levelerGainDb.setWithoutProcessing(levelerStep_->getCurrentGainDb());
+        NonblockingWxGetApp().appConfiguration.filterConfiguration.levelerIntegralErrorDb.setWithoutProcessing(levelerStep_->getIntegralErrorDb());
+        levelerStep_ = nullptr;
+    }
 
     // Force pipeline to delete itself when we're done with the thread.
     pipeline_ = nullptr;

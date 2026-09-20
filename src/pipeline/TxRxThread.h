@@ -50,6 +50,7 @@
 // Forward declarations
 class LinkStep;
 class BeepStep;
+class LevelerStep;
 
 //#define ENABLE_PROCESSING_STATS
 
@@ -69,7 +70,8 @@ public:
         , hasEooBeenSent_(false)
         , helper_(std::move(helper))
         , deferReset_(false)
-    { 
+        , levelerStep_(nullptr)
+    {
         assert(inputSampleRate_ > 0);
         assert(outputSampleRate_ > 0);
 
@@ -116,6 +118,13 @@ private:
     int outputSampleRate_;
     std::shared_ptr<LinkStep> equalizedMicAudioLink_;
     BeepStep* beepStep_;
+    // Non-owning -- pipeline_ owns the real object (via the AudioPipeline
+    // it's appended to), same pattern as beepStep_ above. Only ever set on
+    // the TX side (m_tx == true); used at the end of Entry() to persist
+    // the leveler's final gain state to config before the pipeline (and
+    // this pointer's target) is destroyed. See FilterConfiguration.h's
+    // levelerGainDb/levelerIntegralErrorDb comment.
+    LevelerStep* levelerStep_;
     bool hasEooBeenSent_;
     std::shared_ptr<IRealtimeHelper> helper_;
     std::unique_ptr<short[]> inputSamples_;

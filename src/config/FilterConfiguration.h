@@ -86,7 +86,18 @@ public:
     ConfigurationDataElement<bool> noiseReductionEnable;
     ConfigurationDataElement<bool> agcEnabled;
     ConfigurationDataElement<bool> bwExpandEnabled;
-    
+
+    // LevelerStep's gain state, persisted across app sessions (2026-09-20)
+    // -- not just across transmissions/PTT within one session, which
+    // LevelerStep::reset() already handles on its own (see its comment in
+    // freedv-backend). Saved once a session's TxRxThread is torn down
+    // (MainFrame::stopRxStream()) and fed back in as the starting point
+    // for the next one (TxRxThread::initializePipeline_()), so a following
+    // session doesn't have to re-climb from a cold 0dB start. Defaults of
+    // 0.0f match LevelerStep's own cold-start default.
+    ConfigurationDataElement<float> levelerGainDb;
+    ConfigurationDataElement<float> levelerIntegralErrorDb;
+
     virtual void load(wxConfigBase* config) override;
     virtual void save(wxConfigBase* config) override;
 };

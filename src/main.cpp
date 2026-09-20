@@ -2908,20 +2908,28 @@ void MainFrame::stopRxStream()
         if (m_txThread)
         {
             m_txThread->stop();
-            
+
             if (txInSoundDevice)
             {
                 txInSoundDevice->stop();
                 txInSoundDevice.reset();
             }
-            
+
             if (txOutSoundDevice)
             {
                 txOutSoundDevice->stop();
                 txOutSoundDevice.reset();
             }
-            
+
             m_txThread = nullptr;
+
+            // stop() above blocks until the TX thread's Entry() has fully
+            // returned, which is where it stashes the leveler's final gain
+            // into appConfiguration.filterConfiguration (in-memory only --
+            // see TxRxThread.cpp's comment) -- safe to flush that to disk
+            // now that we're back on the GUI thread, same as every other
+            // config save in this codebase.
+            wxGetApp().appConfiguration.save(pConfig);
         }
 
         if (m_rxThread)
