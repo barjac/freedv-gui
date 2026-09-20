@@ -2926,10 +2926,23 @@ void MainFrame::stopRxStream()
             // stop() above blocks until the TX thread's Entry() has fully
             // returned, which is where it stashes the leveler's final gain
             // into appConfiguration.filterConfiguration (in-memory only --
-            // see TxRxThread.cpp's comment) -- safe to flush that to disk
-            // now that we're back on the GUI thread, same as every other
-            // config save in this codebase.
+            // see TxRxThread.cpp's comment) -- safe to write that to
+            // config now that we're back on the GUI thread, same as every
+            // other config save in this codebase.
+            //
+            // wxConfigBase::Write() (called inside save() via save_())
+            // only updates pConfig's in-memory representation -- it's not
+            // guaranteed to reach the actual config file on disk until
+            // something calls Flush() or the long-lived pConfig object is
+            // destroyed at real process exit. Since this can run on every
+            // ordinary Stop (not just app close), explicitly Flush() here
+            // so the persisted gain is actually on disk immediately,
+            // rather than only after a full app restart -- same reasoning
+            // as the explicit Flush() calls already used elsewhere in this
+            // file for state that must survive a crash/force-quit, not
+            // just a clean exit.
             wxGetApp().appConfiguration.save(pConfig);
+            pConfig->Flush();
         }
 
         if (m_rxThread)
