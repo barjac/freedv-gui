@@ -67,10 +67,10 @@ public:
         , inputSampleRate_(inputSampleRate)
         , outputSampleRate_(outputSampleRate)
         , equalizedMicAudioLink_(std::move(micAudioLink))
+        , levelerStep_(nullptr)
         , hasEooBeenSent_(false)
         , helper_(std::move(helper))
         , deferReset_(false)
-        , levelerStep_(nullptr)
     {
         assert(inputSampleRate_ > 0);
         assert(outputSampleRate_ > 0);
