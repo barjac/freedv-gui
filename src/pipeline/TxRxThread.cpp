@@ -279,7 +279,13 @@ void TxRxThread::initializePipeline_()
             +[]() FREEDV_NONBLOCKING { return CompressorLimiterStep::getLastOutputLoudnessLufs(); },
             agcDiagLogger,
             NonblockingWxGetApp().appConfiguration.filterConfiguration.levelerGainDb.getWithoutProcessing(),
-            NonblockingWxGetApp().appConfiguration.filterConfiguration.levelerIntegralErrorDb.getWithoutProcessing());
+            NonblockingWxGetApp().appConfiguration.filterConfiguration.levelerIntegralErrorDb.getWithoutProcessing(),
+            // Live RNNoise on/off state (2026-09-21) -- picks between
+            // LevelerStep's two silence-freeze thresholds, see
+            // SILENCE_THRESHOLD_LUFS_RNNOISE_ON/OFF's own comment in
+            // LevelerStep.cpp. Same read as eitherOrRNNoiseStep's own
+            // gating condition above.
+            +[]() FREEDV_NONBLOCKING { return (bool)NonblockingWxGetApp().appConfiguration.filterConfiguration.noiseReductionEnable.getWithoutProcessing(); });
         eitherOrProcessAgc->appendPipelineStep(levelerStep_);
         eitherOrProcessAgc->appendPipelineStep(compressorLimiterStep);
 
