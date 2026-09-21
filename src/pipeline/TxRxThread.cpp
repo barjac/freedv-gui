@@ -50,6 +50,7 @@ using namespace std::chrono_literals;
 #include "EqualizerStep.h"
 #include "LevelerStep.h"
 #include "CompressorLimiterStep.h"
+#include "PostLoopCompressorStep.h"
 #include "ResamplePlotStep.h"
 #include "ResampleStep.h"
 #include "TapStep.h"
@@ -114,6 +115,7 @@ extern float g_sig_pwr_av;
 extern std::atomic<bool> g_voice_keyer_tx;
 extern std::atomic<bool> g_eoo_enqueued;
 extern std::atomic<bool> g_agcEnabled;
+extern std::atomic<bool> g_postLoopCompressorEnabled;
 
 #include "../freedv_interface.h"
 extern FreeDVInterface freedvInterface;
@@ -295,9 +297,30 @@ void TxRxThread::initializePipeline_()
             eitherOrBypassAgc);
         pipeline_->appendPipelineStep(eitherOrAgcStep);
 
-        // Resample for plot step (after the leveler/compressor-limiter --
-        // matches PR #1464's "after AGC" tap; feeds the "From Mic" plot tab
-        // with the fully-processed output, per the spec's request).
+        // Optional two-knee soft compressor, positioned outside/after the
+        // leveler/limiter feedback loop entirely (2026-09-21, Barry: "I
+        // wonder if there really is any advantage in wrapping the fast
+        // clipper inside the PI feedback loop. If it was outside we could
+        // use the 2 knee soft compression, which would curb some of the
+        // high peaks") -- see PostLoopCompressorStep.h's own comment for
+        // why it's deliberately standalone (no shared state with the loop
+        // above at all). Independently toggleable from AGC itself, for
+        // blind A/B testing (its own checkbox in dlg_filter.cpp, right
+        // next to AGC's). Defaults off -- new, unvalidated stage.
+        auto eitherOrProcessPostLoopCompressor = new AudioPipeline(inputSampleRate_, inputSampleRate_);
+        auto eitherOrBypassPostLoopCompressor = new AudioPipeline(inputSampleRate_, inputSampleRate_);
+        auto postLoopCompressorStep = new PostLoopCompressorStep(inputSampleRate_);
+        eitherOrProcessPostLoopCompressor->appendPipelineStep(postLoopCompressorStep);
+        auto eitherOrPostLoopCompressorStep = new EitherOrStep(
+            +[]() FREEDV_NONBLOCKING { return g_postLoopCompressorEnabled.load(std::memory_order_acquire); },
+            eitherOrProcessPostLoopCompressor,
+            eitherOrBypassPostLoopCompressor);
+        pipeline_->appendPipelineStep(eitherOrPostLoopCompressorStep);
+
+        // Resample for plot step (after the leveler/compressor-limiter and
+        // the optional post-loop compressor above -- matches PR #1464's
+        // "after AGC" tap; feeds the "From Mic" plot tab with the fully-
+        // processed output, per the spec's request).
         auto resampleForPlotStepAfterAGC = new ResampleForPlotStep(&g_plotSpeechInFifoAfterAGC);
         auto resampleForPlotPipelineAfterAGC = new AudioPipeline(inputSampleRate_, resampleForPlotStepAfterAGC->getOutputSampleRate());
 #if defined(ENABLE_FASTER_PLOTS)

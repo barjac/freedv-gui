@@ -30,6 +30,7 @@ FilterConfiguration::FilterConfiguration()
     : noiseReductionEnable("/Filter/speexpp_enable", true)
     , agcEnabled("/Filter/agcEnable", true)
     , bwExpandEnabled("/Filter/bwExpandEnable", true)
+    , postLoopCompressorEnabled("/Filter/postLoopCompressorEnable", false)
     , levelerGainDb("/Filter/levelerGainDb", 0.0f)
     , levelerIntegralErrorDb("/Filter/levelerIntegralErrorDb", 0.0f)
 {
@@ -44,6 +45,7 @@ void FilterConfiguration::load(wxConfigBase* config)
     load_(config, noiseReductionEnable);
     load_(config, agcEnabled);
     load_(config, bwExpandEnabled);
+    load_(config, postLoopCompressorEnabled);
     load_(config, levelerGainDb);
     load_(config, levelerIntegralErrorDb);
 }
@@ -56,6 +58,7 @@ void FilterConfiguration::save(wxConfigBase* config)
     save_(config, noiseReductionEnable);
     save_(config, agcEnabled);
     save_(config, bwExpandEnabled);
+    save_(config, postLoopCompressorEnabled);
     save_(config, levelerGainDb);
     save_(config, levelerIntegralErrorDb);
 }

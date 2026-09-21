@@ -86,6 +86,11 @@ public:
     ConfigurationDataElement<bool> noiseReductionEnable;
     ConfigurationDataElement<bool> agcEnabled;
     ConfigurationDataElement<bool> bwExpandEnabled;
+    // Independent, optional two-knee soft compressor positioned outside
+    // the leveler/limiter feedback loop (2026-09-21) -- see
+    // PostLoopCompressorStep.h in freedv-backend. Defaults off: new,
+    // unvalidated stage, not yet live A/B tested.
+    ConfigurationDataElement<bool> postLoopCompressorEnabled;
 
     // LevelerStep's gain state, persisted across app sessions (2026-09-20)
     // -- not just across transmissions/PTT within one session, which

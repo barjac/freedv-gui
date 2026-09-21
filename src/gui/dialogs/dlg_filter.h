@@ -82,6 +82,7 @@ class FilterDlg : public wxDialog
 
         void    OnNoiseReductionEnable(wxScrollEvent& event);
         void    OnAgcEnable(wxScrollEvent& event);
+        void    OnPostLoopCompressorEnable(wxScrollEvent& event);
         void    OnBwExpandEnable(wxScrollEvent& event);
 
         void    OnMicInBassFreqScroll(wxScrollEvent&) { sliderToFreq(&m_MicInBass, true); }
@@ -117,6 +118,7 @@ class FilterDlg : public wxDialog
 
         wxCheckBox*   m_ckboxNoiseReduction;
         wxCheckBox*   m_ckboxAgcEnabled;
+        wxCheckBox*   m_ckboxPostLoopCompressorEnabled;
         wxCheckBox*   m_ckboxBwExpandEnabled;
         
         wxStdDialogButtonSizer* m_sdbSizer5;

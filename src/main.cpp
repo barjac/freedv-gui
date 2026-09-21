@@ -124,6 +124,11 @@ std::atomic<bool>  g_half_duplex;
 std::atomic<bool>  g_voice_keyer_tx;
 std::atomic<bool>  g_agcEnabled;
 std::atomic<bool>  g_bwExpandEnabled;
+// Independent, optional two-knee soft compressor positioned *outside* the
+// LevelerStep/CompressorLimiterStep feedback loop (2026-09-21) -- see
+// PostLoopCompressorStep.h in freedv-backend for why it's deliberately kept
+// separate from that loop, and TxRxThread.cpp for its wiring.
+std::atomic<bool>  g_postLoopCompressorEnabled;
 
 // tx/rx processing states
 std::atomic<int>                 g_State, g_prev_State;
@@ -922,6 +927,7 @@ void MainFrame::loadConfiguration_()
     
     // Load AGC state
     g_agcEnabled.store(wxGetApp().appConfiguration.filterConfiguration.agcEnabled, std::memory_order_release);
+    g_postLoopCompressorEnabled.store(wxGetApp().appConfiguration.filterConfiguration.postLoopCompressorEnabled, std::memory_order_release);
     
     // Load BW expander state
     g_bwExpandEnabled.store(wxGetApp().appConfiguration.filterConfiguration.bwExpandEnabled, std::memory_order_release);
