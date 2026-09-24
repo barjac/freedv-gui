@@ -270,7 +270,15 @@ void TxRxThread::initializePipeline_()
         auto eitherOrBypassAgc = new AudioPipeline(inputSampleRate_, inputSampleRate_);
 
         auto agcDiagLogger = std::make_shared<DiagnosticCsvLogger>();
-        auto compressorLimiterStep = new CompressorLimiterStep(inputSampleRate_, agcDiagLogger);
+        auto compressorLimiterStep = new CompressorLimiterStep(
+            inputSampleRate_,
+            agcDiagLogger,
+            // Live RNNoise on/off state (2026-09-24) -- picks between
+            // LoudnessMeter's two silence floors, see
+            // SILENCE_FLOOR_LUFS_RNNOISE_ON/OFF's own comment in
+            // CompressorLimiterStep.cpp. Same read as
+            // eitherOrRNNoiseStep's/LevelerStep's own gating condition.
+            +[]() FREEDV_NONBLOCKING { return (bool)NonblockingWxGetApp().appConfiguration.filterConfiguration.noiseReductionEnable.getWithoutProcessing(); });
         // Seed from whatever the previous session's MainFrame::stopRxStream()
         // saved (see FilterConfiguration.h's levelerGainDb/
         // levelerIntegralErrorDb comment) -- 0.0f/0.0f (LevelerStep's own
