@@ -282,6 +282,10 @@ void TxRxThread::initializePipeline_()
             agcDiagLogger,
             NonblockingWxGetApp().appConfiguration.filterConfiguration.levelerGainDb.getWithoutProcessing(),
             NonblockingWxGetApp().appConfiguration.filterConfiguration.levelerIntegralErrorDb.getWithoutProcessing(),
+            // Target LUFS (2026-09-24) -- config-file settable so different
+            // values can be tried via Stop/Start, no rebuild. See
+            // FilterConfiguration.h's levelerTargetLufs comment.
+            NonblockingWxGetApp().appConfiguration.filterConfiguration.levelerTargetLufs.getWithoutProcessing(),
             // Live RNNoise on/off state (2026-09-21) -- picks between
             // LevelerStep's two silence-freeze thresholds, see
             // SILENCE_THRESHOLD_LUFS_RNNOISE_ON/OFF's own comment in

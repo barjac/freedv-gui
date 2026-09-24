@@ -103,6 +103,13 @@ public:
     ConfigurationDataElement<float> levelerGainDb;
     ConfigurationDataElement<float> levelerIntegralErrorDb;
 
+    // LevelerStep's target loudness (2026-09-24, Barry: "Can we add
+    // 'targetLUFS' in the settings to speed testing without rebuilds?") --
+    // was a fixed -23.0f constant in freedv-backend; now settable here so
+    // different values can be tried via a Stop/Start cycle, no rebuild.
+    // Default -23.0f matches the original constant/EBU R128 standard value.
+    ConfigurationDataElement<float> levelerTargetLufs;
+
     virtual void load(wxConfigBase* config) override;
     virtual void save(wxConfigBase* config) override;
 };
