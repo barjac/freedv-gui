@@ -83,6 +83,19 @@
 #define SNR_PLOT_SECOND_SEGMENTS (6)
 #define SNR_PLOT_DT (0.1)
 
+// AGC/leveler gain plot constants (2026-09-28, Barry: "a plot of AGCdB
+// similar to the SNR plot but faster X and +/-9dB Y scale... something I
+// want to see while transmitting"). Much shorter window than SNR's 180s
+// -- the leveler's own PI time constants are 2s (proportional) / 15s
+// (integral), so 15s shows several proportional-term time constants'
+// worth of movement without the trace feeling static. Sample period
+// matches the TX level meter's own fast (25ms/40Hz) refresh, since this
+// plots live during TX alongside it -- not SNR's slower 100ms.
+#define AGC_GAIN_PLOT_SECONDS (15)
+#define AGC_GAIN_PLOT_SECOND_SEGMENTS (5)
+#define MIN_AGC_GAIN_PLOT_VAL (-9)
+#define MAX_AGC_GAIN_PLOT_VAL (9)
+
 // sample rate I/O & conversion constants
 
 #define SAMPLE_RATE         48000                          // 48 kHz sampling rate rec. as we can trust accuracy of sound card

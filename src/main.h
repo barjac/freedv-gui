@@ -297,6 +297,7 @@ class MainFrame : public TopFrame
         PlotScalar*             m_panelSpeechOut;
         PlotScalar*             m_panelDemodIn;
         PlotScalar*             m_panelSNR;
+        PlotScalar*             m_panelAgcGain;
 
         bool                    m_RxRunning;
         bool                    txChangeoverOccurring_;
