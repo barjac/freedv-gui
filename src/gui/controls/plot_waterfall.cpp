@@ -443,7 +443,7 @@ void PlotWaterfall::rebuildGraticuleBitmaps_(wxGraphicsContext* ctx)
         // own context's DPI, and on Windows a memory DC's is the default 96 rather than
         // the window's, which drew the labels too small on scaled displays.
         std::unique_ptr<wxGraphicsContext> gc(wxGraphicsContext::Create(dc));
-        drawStaticGraticule_(gc.get(), ctx->CreateFont(GetFont(), GetForegroundColour()));
+        drawStaticGraticule_(gc.get(), ctx->CreateFont(GetFont(), GetGroupBoxForegroundColour()));
     }
     wxImage image = bitmap.ConvertToImage();
 
@@ -579,7 +579,7 @@ void PlotWaterfall::drawStaticGraticule_(wxGraphicsContext* ctx, const wxGraphic
     float    f, time, freq_hz_to_px;
 
     wxBrush ltGraphBkgBrush;
-    wxColour foregroundColor = wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOWTEXT);
+    wxColour foregroundColor = GetGroupBoxForegroundColour();
     ltGraphBkgBrush.SetStyle(wxBRUSHSTYLE_TRANSPARENT);
     ltGraphBkgBrush.SetColour(foregroundColor);
     ctx->SetBrush(ltGraphBkgBrush);

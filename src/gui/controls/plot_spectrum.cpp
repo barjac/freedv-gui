@@ -108,7 +108,7 @@ PlotSpectrum::~PlotSpectrum()
 //----------------------------------------------------------------
 // OnSize()
 //----------------------------------------------------------------
-void PlotSpectrum::OnSize(wxSizeEvent&) {
+void PlotSpectrum::OnSize(wxSizeEvent& event) {
     // Determine correct left offset based on font size
     int text_w = 0;
     int text_h = 0;
@@ -122,6 +122,7 @@ void PlotSpectrum::OnSize(wxSizeEvent&) {
         bottomOffset_ = std::max(bottomOffset_, text_h);
     }
     bottomOffset_ = std::max(bottomOffset_, (int)YBOTTOM_OFFSET);
+    event.Skip();
 }
 
 //----------------------------------------------------------------
@@ -230,22 +231,22 @@ void PlotSpectrum::drawGraticuleStatic_(wxGraphicsContext* ctx)
     float    f, mag, freq_hz_to_px, mag_dB_to_py;
 
     wxBrush ltGraphBkgBrush;
-    wxColour foregroundColor = wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOWTEXT);
+    wxColour foregroundColor = GetGroupBoxForegroundColour();
     ltGraphBkgBrush.SetStyle(wxBRUSHSTYLE_TRANSPARENT);
     ltGraphBkgBrush.SetColour(foregroundColor);
     ctx->SetBrush(ltGraphBkgBrush);
     ctx->SetPen(wxPen(foregroundColor, 1));
-
-    wxGraphicsFont tmpFont = ctx->CreateFont(GetFont(), GetForegroundColour());
-    ctx->SetFont(tmpFont);
+    if (!repaintDataOnly)
+    {
+        wxGraphicsFont tmpFont = ctx->CreateFont(GetFont(), GetGroupBoxForegroundColour());
+        ctx->SetFont(tmpFont);
 
 #if wxCHECK_VERSION(3,2,0)
-    // The labels are laid out using the window's text metrics, so they need to come out
-    // the same size here. They don't when drawing into the cached graticule bitmap on
-    // Windows: a context on a memory DC renders fonts at 96 DPI regardless of the
-    // monitor's, so scale the font to match. (Older wxWidgets draws the graticule
-    // directly; see drawGraticuleFast().)
-    {
+        // The labels are laid out using the window's text metrics, so they need to come out
+        // the same size here. They don't when drawing into the cached graticule bitmap on
+        // Windows: a context on a memory DC renders fonts at 96 DPI regardless of the
+        // monitor's, so scale the font to match. (Older wxWidgets draws the graticule
+        // directly; see drawGraticuleFast().)
         wxDouble ctxWidth = 0, ctxHeight = 0;
         ctx->GetTextExtent("0dB", &ctxWidth, &ctxHeight);
         int windowWidth = 0, windowHeight = 0;
@@ -257,11 +258,11 @@ void PlotSpectrum::drawGraticuleStatic_(wxGraphicsContext* ctx)
             {
                 wxFont scaledFont(GetFont());
                 scaledFont.SetFractionalPointSize(scaledFont.GetFractionalPointSize() * fontScale);
-                ctx->SetFont(ctx->CreateFont(scaledFont, GetForegroundColour()));
+                ctx->SetFont(ctx->CreateFont(scaledFont, GetGroupBoxForegroundColour()));
             }
         }
-    }
 #endif // wxCHECK_VERSION(3,2,0)
+    }
 
     freq_hz_to_px = (float)m_rGrid.GetWidth()/(MAX_F_HZ-MIN_F_HZ);
     mag_dB_to_py = (float)m_rGrid.GetHeight()/(m_max_mag_db - m_min_mag_db);
