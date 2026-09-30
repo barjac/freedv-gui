@@ -110,6 +110,14 @@ public:
     // Default -23.0f matches the original constant/EBU R128 standard value.
     ConfigurationDataElement<float> levelerTargetLufs;
 
+    // LevelerStep's pause grace period (2026-09-30, Barry: "Is the grace
+    // period accessible to change?", wanting to empirically test whether
+    // 300ms is enough for a large, still-converging correction to keep
+    // progressing through natural inter-word pauses) -- same rebuild-free
+    // testing pattern as levelerTargetLufs above. Default 0.3f matches
+    // LevelerStep's own original constant value.
+    ConfigurationDataElement<float> levelerPauseGracePeriodSec;
+
     virtual void load(wxConfigBase* config) override;
     virtual void save(wxConfigBase* config) override;
 };

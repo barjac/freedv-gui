@@ -299,7 +299,11 @@ void TxRxThread::initializePipeline_()
             // SILENCE_THRESHOLD_LUFS_RNNOISE_ON/OFF's own comment in
             // LevelerStep.cpp. Same read as eitherOrRNNoiseStep's own
             // gating condition above.
-            +[]() FREEDV_NONBLOCKING { return (bool)NonblockingWxGetApp().appConfiguration.filterConfiguration.noiseReductionEnable.getWithoutProcessing(); });
+            +[]() FREEDV_NONBLOCKING { return (bool)NonblockingWxGetApp().appConfiguration.filterConfiguration.noiseReductionEnable.getWithoutProcessing(); },
+            // Pause grace period (2026-09-30) -- config-file settable so
+            // different values can be tried via Stop/Start, no rebuild.
+            // See FilterConfiguration.h's levelerPauseGracePeriodSec comment.
+            NonblockingWxGetApp().appConfiguration.filterConfiguration.levelerPauseGracePeriodSec.getWithoutProcessing());
         eitherOrProcessAgc->appendPipelineStep(levelerStep_);
         eitherOrProcessAgc->appendPipelineStep(compressorLimiterStep);
 
