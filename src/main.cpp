@@ -2568,11 +2568,6 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
             if (maxDemodIn < abs(demodInPlotSamples[i]))
                 maxDemodIn = abs(demodInPlotSamples[i]);
 
-        int maxDemodIn = 0;
-        for(int i=0; i<WAVEFORM_PLOT_BUF; i++)
-            if (maxDemodIn < abs(demodInPlotSamples[i]))
-                maxDemodIn = abs(demodInPlotSamples[i]);
-
         if (maxDemodIn > m_maxLevel)
             m_maxLevel = maxDemodIn;
 
