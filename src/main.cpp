@@ -146,6 +146,12 @@ std::atomic<int>    g_infifo1_full;
 std::atomic<int>    g_outfifo1_empty;
 std::atomic<int>    g_infifo2_full;
 std::atomic<int>    g_outfifo2_empty;
+// Input-side starvation: incremented when TxRxThread couldn't read a full
+// frame from infifo1/infifo2 because too few samples had arrived yet, i.e.
+// the demodulator/mic-encode path -- not just the speaker/radio output --
+// went hungry for real-time data.
+std::atomic<int>    g_infifo1_empty;
+std::atomic<int>    g_infifo2_empty;
 int                 g_AEstatus1[4];
 int                 g_AEstatus2[4];
 
@@ -186,10 +192,7 @@ wxWindow           *g_parent;
 std::atomic<float>  g_RxFreqOffsetHz;
 std::atomic<float>  g_TxFreqOffsetHz;
 
-// experimental mutex to make sound card callbacks mutually exclusive
-// TODO: review code and see if we need this any more, as fifos should
-// now be thread safe
-
+// Mutex to protect data shared between non-RT audio processing threads and GUI.
 wxMutex g_mutexProtectingCallbackData(wxMUTEX_RECURSIVE);
 
 // End of TX state control
@@ -341,7 +344,7 @@ void MainApp::UnitTest_()
     }
     std::this_thread::sleep_for(2s);
     
-    constexpr int MAX_TIME_AS_COUNTER = 12000; // 20 minutes
+    constexpr int MAX_TIME_AS_COUNTER = 60000; // 20 minutes
     if (testName == "tx")
     {
         if (utTxOutFile != "")
@@ -387,7 +390,7 @@ void MainApp::UnitTest_()
                 int counter = 0;
                 while (g_playFileToMicIn.load(std::memory_order_acquire) && (counter++) < MAX_TIME_AS_COUNTER)
                 {
-                    std::this_thread::sleep_for(100ms);
+                    std::this_thread::sleep_for(20ms);
                 } 
             }
             else
@@ -463,7 +466,7 @@ void MainApp::UnitTest_()
             int counter = 0;
             while (g_playFileFromRadio.load(std::memory_order_acquire) && (counter++) < MAX_TIME_AS_COUNTER)
             {
-                std::this_thread::sleep_for(100ms);
+                std::this_thread::sleep_for(20ms);
                 auto newSync = freedvInterface.getSync();
                 if (newSync != sync)
                 {
@@ -476,9 +479,9 @@ void MainApp::UnitTest_()
         {
             // Receive for txtime seconds
             auto sync = 0;
-            for (int i = 0; i < utTxTimeSeconds*10; i++)
+            for (int i = 0; i < utTxTimeSeconds*50; i++)
             {
-                std::this_thread::sleep_for(100ms);
+                std::this_thread::sleep_for(20ms);
                 auto newSync = freedvInterface.getSync();
                 if (newSync != sync)
                 {
@@ -498,6 +501,14 @@ void MainApp::UnitTest_()
     // Wait a second to make sure we're not doing any more processing
     std::this_thread::sleep_for(1000ms);
  
+    // Report CoreAudio/PortAudio-detected under/overflow counts before we
+    // tear anything down -- these reflect the audio subsystem's own view of
+    // whether our real-time threads got samples to it on time, as opposed to
+    // our internal FIFO-empty counters which only see the symptom.
+    log_info("Audio1: inUnderflow: %d inOverflow: %d outUnderflow: %d outOverflow: %d", g_AEstatus1[0], g_AEstatus1[1], g_AEstatus1[2], g_AEstatus1[3]);
+    log_info("Audio2: inUnderflow: %d inOverflow: %d outUnderflow: %d outOverflow: %d", g_AEstatus2[0], g_AEstatus2[1], g_AEstatus2[2], g_AEstatus2[3]);
+    log_info("Fifos: infull1: %d outempty1: %d infull2: %d outempty2: %d inempty1: %d inempty2: %d", g_infifo1_full.load(std::memory_order_relaxed), g_outfifo1_empty.load(std::memory_order_relaxed), g_infifo2_full.load(std::memory_order_relaxed), g_outfifo2_empty.load(std::memory_order_relaxed), g_infifo1_empty.load(std::memory_order_relaxed), g_infifo2_empty.load(std::memory_order_relaxed));
+
     // Fire event to stop FreeDV
     log_info("Firing stop");
     CallAfter([this]() {
@@ -1141,7 +1152,7 @@ MainFrame::MainFrame(wxWindow *parent) : TopFrame(parent, wxID_ANY, _("FreeDV ")
     // memory while processing audio).
     SNR_FORMAT_STR("%ddB"),
     MODE_FORMAT_STR("Mode: %s"),
-    MODE_RADE_FORMAT_STR("Mode: RADEV1"),
+    MODE_RADE_FORMAT_STR("Mode: RADEV2"),
     NO_SNR_LABEL("--"),
     EMPTY_STR(""),
     MODEM_LABEL("Modem"),
@@ -1947,6 +1958,7 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
         // b) We detect a valid format callsign in the text (see https://en.wikipedia.org/wiki/Amateur_radio_call_signs).
         // c) We don't currently have a pending report to add to the outbound list for the active callsign.
         // When the above is true, capture the callsign and current SNR and add to the PSK Reporter object's outbound list.
+        std::string lastReportedCallsign = (const char*)m_cboLastReportedCallsigns->GetValue().ToUTF8();
         if (wxGetApp().m_reporters.size() > 0 && wxGetApp().appConfiguration.reportingConfiguration.reportingEnabled)
         {
             const char* text = freedvInterface.getReliableText();
@@ -1980,6 +1992,7 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
                         freqString = wxNumberFormatter::ToString(freq, 4);
                     }
 
+                    bool addedCallsign = lastReportedCallsign != rxCallsign;
                     if ((m_lastReportedCallsignListView->GetItemCount() == 0 || 
                         m_lastReportedCallsignListView->GetItemText(0, 0) != rxCallsign ||
                         m_lastReportedCallsignListView->GetItemText(0, 1) != freqString) ||
@@ -2002,6 +2015,8 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
                         m_lastReportedCallsignListView->SetColumnWidth(0, getIdealStationsHeardColumnLength_(0));
                         m_lastReportedCallsignListView->SetColumnWidth(1, getIdealStationsHeardColumnLength_(1));
                         m_lastReportedCallsignListView->SetColumnWidth(2, getIdealStationsHeardColumnLength_(2));
+
+                        addedCallsign = true;
                     }
                     
                     wxString snrAsString;
@@ -2031,7 +2046,7 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
                             pendingSnr,
                             freqLongLong);
         
-                        if (!g_playFileFromRadio.load(std::memory_order_acquire))
+                        if (!g_playFileFromRadio.load(std::memory_order_acquire) && addedCallsign)
                         {
                             for (auto& obj : wxGetApp().m_reporters)
                             {
@@ -2042,6 +2057,17 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
                                     pendingSnr);
                             }
                         }
+                        else if (addedCallsign && wxGetApp().m_sharedReporterObject)
+                        {
+                            // Special case: toggle highlight on FreeDV Reporter but do not
+                            // report to other services as we've already done so earlier.
+                            wxGetApp().m_sharedReporterObject->addReceiveRecord(
+                                pendingCallsign,
+                                freedvInterface.getCurrentModeStr(),
+                                freq,
+                                pendingSnr
+                            );
+                        }
                     }
                 }
             }
@@ -2050,7 +2076,8 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
                 syncState)
             {               
                 // Special case for RADE--report '--' for callsign so we can
-                // at least report that we're receiving *something*.
+                // at least report that we're receiving *something*. Only do this
+                // if we haven't gotten a callsign yet.
                 int64_t freq = wxGetApp().appConfiguration.reportingConfiguration.reportingFrequency;
 
                 // Only report if there's a valid reporting frequency and if we're not playing 
@@ -2062,7 +2089,7 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
                     if (!g_playFileFromRadio.load(std::memory_order_acquire))
                     {                
                         wxGetApp().m_sharedReporterObject->addReceiveRecord(
-                            "",
+                            lastReportedCallsign,
                             freedvInterface.getCurrentModeStr(),
                             freq,
                             pendingSnr
@@ -2363,9 +2390,9 @@ void MainFrame::performFreeDVOn_()
         // Text field/callsign callbacks.
         if (wxGetApp().appConfiguration.reportingConfiguration.reportingEnabled)
         {
-            char temp[9];
-            memset(temp, 0, 9);
-            strncpy(temp, wxGetApp().appConfiguration.reportingConfiguration.reportingCallsign->ToUTF8(), 8); // One less than the size of temp to ensure we don't overwrite the null.
+            char temp[REPORTING_CALLSIGN_MAX_LENGTH + 1];
+            memset(temp, 0, sizeof(temp));
+            strncpy(temp, wxGetApp().appConfiguration.reportingConfiguration.reportingCallsign->ToUTF8(), REPORTING_CALLSIGN_MAX_LENGTH); // One less than the size of temp to ensure we don't overwrite the null.
             log_info("Setting callsign to %s", temp);
             freedvInterface.setReliableText(temp);
             
@@ -2941,7 +2968,7 @@ void MainFrame::startRxStream()
         constexpr int MAX_INCOMING_AUDIO_SEC = 75;
         int m_fifoSize_ms = wxGetApp().appConfiguration.fifoSizeMs;
         int soundCard1InFifoSizeSamples = MAX_INCOMING_AUDIO_SEC * wxGetApp().appConfiguration.audioConfiguration.soundCard1In.sampleRate;
-
+                
         // Guards against FIFO sizes accidentally being too small to fit an entier TX block.
         // Theoretically allows up to three TX packets to be queued at a time at minimum
         // (depending on mode).
@@ -3224,6 +3251,8 @@ void MainFrame::startRxStream()
         g_outfifo1_empty.store(0, std::memory_order_relaxed);
         g_infifo2_full.store(0, std::memory_order_relaxed);
         g_outfifo2_empty.store(0, std::memory_order_relaxed);
+        g_infifo1_empty.store(0, std::memory_order_relaxed);
+        g_infifo2_empty.store(0, std::memory_order_relaxed);
         for (int i=0; i<4; i++) {
             g_AEstatus1[i] = g_AEstatus2[i] = 0;
         }
@@ -3591,7 +3620,7 @@ void MainFrame::initializeFreeDVReporter_()
     auto oldReporterObject = wxGetApp().m_sharedReporterObject;
     wxGetApp().m_sharedReporterObject =
         std::make_shared<FreeDVReporter>(
-            wxGetApp().appConfiguration.reportingConfiguration.freedvReporterHostname->ToStdString(),
+            /*wxGetApp().appConfiguration.reportingConfiguration.freedvReporterHostname->ToStdString()*/ "reporter-radev2.k6aq.net",
             wxGetApp().appConfiguration.reportingConfiguration.reportingCallsign->ToStdString(),
             wxGetApp().appConfiguration.reportingConfiguration.reportingGridSquare->ToStdString(),
             std::string("FreeDV ") + GetFreeDVVersion(),

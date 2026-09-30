@@ -53,7 +53,7 @@
 class LinkStep;
 class BeepStep;
 
-//#define ENABLE_PROCESSING_STATS
+#define ENABLE_PROCESSING_STATS
 
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=--=-=-=-=
 // class txRxThread - tx/rx processing thread
@@ -69,9 +69,10 @@ public:
         , outputSampleRate_(outputSampleRate)
         , equalizedMicAudioLink_(std::move(micAudioLink))
         , hasEooBeenSent_(false)
+        , pendingEooCount_(0)
         , helper_(std::move(helper))
         , deferReset_(false)
-    { 
+    {
         assert(inputSampleRate_ > 0);
         assert(outputSampleRate_ > 0);
 

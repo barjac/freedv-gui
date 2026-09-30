@@ -509,7 +509,7 @@ AudioDeviceSpecification WASAPIAudioEngine::getDeviceSpecification_(ComPtr<IMMDe
     if (FAILED(hr))
     {
         std::stringstream ss;
-        ss << "Could not activate IAudioClient for device " << spec.name << " (hr = " << hr << ")";
+        ss << "Could not activate IAudioClient for device " << spec.name.ToStdString() << " (hr = " << hr << ")";
         log_error(ss.str().c_str());
         if (onAudioErrorFunction)
         {
@@ -524,7 +524,7 @@ AudioDeviceSpecification WASAPIAudioEngine::getDeviceSpecification_(ComPtr<IMMDe
     if (FAILED(hr))
     {
         std::stringstream ss;
-        ss << "Could not get stream format for device " << spec.name << " (hr = " << hr << ")";
+        ss << "Could not get stream format for device " << spec.name.ToStdString() << " (hr = " << hr << ")";
         log_error(ss.str().c_str());
         if (onAudioErrorFunction)
         {
