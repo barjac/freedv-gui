@@ -91,10 +91,15 @@
 // worth of movement without the trace feeling static. Sample period
 // matches the TX level meter's own fast (25ms/40Hz) refresh, since this
 // plots live during TX alongside it -- not SNR's slower 100ms.
+// Y range widened to +/-12dB (2026-09-30, Barry: testing extreme low/high
+// input found the trace clipping against the original +/-9dB edges) --
+// matches LEVELER_GAIN_LIMIT_DB (LevelerStep.cpp, backend) exactly, so
+// the plot can now show the leveler's true full range instead of an
+// arbitrarily tighter one.
 #define AGC_GAIN_PLOT_SECONDS (15)
 #define AGC_GAIN_PLOT_SECOND_SEGMENTS (5)
-#define MIN_AGC_GAIN_PLOT_VAL (-9)
-#define MAX_AGC_GAIN_PLOT_VAL (9)
+#define MIN_AGC_GAIN_PLOT_VAL (-12)
+#define MAX_AGC_GAIN_PLOT_VAL (12)
 
 // sample rate I/O & conversion constants
 
