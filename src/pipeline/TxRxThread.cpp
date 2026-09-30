@@ -39,10 +39,6 @@ using namespace std::chrono_literals;
 
 #include "freedv_sanitizers.h"
 
-// WebRTC uses FS, which is defined in defines.h. Thus, it needs to be included
-// first.
-#include "AgcStep.h"
-
 // This forces us to use freedv-gui's version rather than another one.
 // TBD -- may not be needed once we fully switch over to the audio pipeline.
 #include "../defines.h"
@@ -54,6 +50,9 @@ using namespace std::chrono_literals;
 #include "EitherOrStep.h"
 #include "RNNoiseStep.h"
 #include "EqualizerStep.h"
+#include "LevelerStep.h"
+#include "CompressorLimiterStep.h"
+#include "PostLoopCompressorStep.h"
 #include "ResamplePlotStep.h"
 #include "ResampleStep.h"
 #include "TapStep.h"
@@ -65,6 +64,8 @@ using namespace std::chrono_literals;
 #include "LinkStep.h"
 #include "BeepStep.h"
 #include "MixStep.h"
+
+#include "util/DiagnosticCsvLogger.h"
 
 #include "util/logging/ulog.h"
 #include "os/os_interface.h"
@@ -124,6 +125,7 @@ extern std::atomic<bool> g_voice_keyer_tx;
 extern std::atomic<bool> g_eoo_enqueued;
 extern std::atomic<bool> g_agcEnabled;
 extern std::atomic<float> g_tone_phase;
+extern std::atomic<bool> g_postLoopCompressorEnabled;
 
 #include "../freedv_interface.h"
 extern FreeDVInterface freedvInterface;
@@ -154,28 +156,6 @@ void TxRxThread::initializePipeline_()
     {
         pipeline_ = std::make_unique<AudioPipeline>(inputSampleRate_, outputSampleRate_);
 
-        // Record from mic step (optional)
-        auto recordMicStep = new RecordStep(
-            inputSampleRate_, 
-            []() { return g_sfRecMicFile.load(std::memory_order_acquire); }, 
-            [](int) {
-                // Recording stops when the user explicitly tells us to,
-                // no action required here.
-            }
-        );
-        auto recordMicPipeline = new AudioPipeline(inputSampleRate_, inputSampleRate_);
-        recordMicPipeline->appendPipelineStep(recordMicStep);
-        
-        auto recordMicTap = new TapStep(inputSampleRate_, recordMicPipeline);
-        auto bypassRecordMic = new AudioPipeline(inputSampleRate_, inputSampleRate_);
-        
-        auto eitherOrRecordMic = new EitherOrStep(
-            +[]() FREEDV_NONBLOCKING { return (g_recVoiceKeyerFile.load(std::memory_order_relaxed) || g_recFileFromMic.load(std::memory_order_relaxed)) && (g_sfRecMicFile.load(std::memory_order_acquire) != NULL); },
-            recordMicTap,
-            bypassRecordMic
-        );
-        pipeline_->appendPipelineStep(eitherOrRecordMic);
-        
         // Mic In playback step (optional)
         auto eitherOrBypassPlay = new AudioPipeline(inputSampleRate_, inputSampleRate_);
         auto eitherOrPlayMicIn = new AudioPipeline(inputSampleRate_, inputSampleRate_);
@@ -199,8 +179,11 @@ void TxRxThread::initializePipeline_()
             eitherOrPlayMicIn,
             eitherOrBypassPlay);
         pipeline_->appendPipelineStep(eitherOrPlayStep);
-        
-        // Resample for plot step (before equalization)
+
+        // Resample for plot step (before equalization) -- feeds the Level
+        // gauge's TX reading (see MainFrame::OnTimer()), which per PR #1464
+        // is deliberately taken before EQ/leveler/limiter so it reflects
+        // true mic drive rather than the already-processed signal.
         auto resampleForPlotStepBeforeEQ = new ResampleForPlotStep(&g_plotSpeechInFifoBeforeEQ);
         auto resampleForPlotPipelineBeforeEQ = new AudioPipeline(inputSampleRate_, resampleForPlotStepBeforeEQ->getOutputSampleRate());
 #if defined(ENABLE_FASTER_PLOTS)
@@ -225,9 +208,38 @@ void TxRxThread::initializePipeline_()
             eitherOrBypassRNNoise);
         pipeline_->appendPipelineStep(eitherOrRNNoiseStep);
 
+        // Record from mic step (optional). Deliberately placed right after
+        // RNNoise (Barry, 2026-09-15) so "Record new voice keyer message"/
+        // "Record from Mic" capture noise-reduced audio when RNNoise is on,
+        // rather than the completely raw/unprocessed mic signal this used
+        // to tap at the very top of the pipeline -- useful for making clean
+        // test clips without a separate noise-reduction utility. Still
+        // before EQ/leveler/limiter, so it doesn't bake in any level-
+        // shaping that would work against using these clips for later
+        // controlled A/B testing (e.g. agc_test_clip_play.sh).
+        auto recordMicStep = new RecordStep(
+            inputSampleRate_,
+            []() { return g_sfRecMicFile.load(std::memory_order_acquire); },
+            [](int) {
+                // Recording stops when the user explicitly tells us to,
+                // no action required here.
+            }
+        );
+        auto recordMicPipeline = new AudioPipeline(inputSampleRate_, inputSampleRate_);
+        recordMicPipeline->appendPipelineStep(recordMicStep);
+
+        auto recordMicTap = new TapStep(inputSampleRate_, recordMicPipeline);
+        auto bypassRecordMic = new AudioPipeline(inputSampleRate_, inputSampleRate_);
+
+        auto eitherOrRecordMic = new EitherOrStep(
+            +[]() FREEDV_NONBLOCKING { return (g_recVoiceKeyerFile.load(std::memory_order_relaxed) || g_recFileFromMic.load(std::memory_order_relaxed)) && (g_sfRecMicFile.load(std::memory_order_acquire) != NULL); },
+            recordMicTap,
+            bypassRecordMic
+        );
+        pipeline_->appendPipelineStep(eitherOrRecordMic);
         // Equalizer step (optional based on filter state)
         auto equalizerStep = new EqualizerStep(
-            inputSampleRate_, 
+            inputSampleRate_,
             &g_rxUserdata->micInEQEnable,
             &g_rxUserdata->sbqMicInBass,
             &g_rxUserdata->sbqMicInMid,
@@ -236,20 +248,96 @@ void TxRxThread::initializePipeline_()
             g_rxUserdata->micEqLock);
         pipeline_->appendPipelineStep(equalizerStep);
 
-        // AGC step (optional)
+        // Loudness leveler + compressor/limiter (optional based on filter
+        // state). Replaces the old single AgcStep, which used
+        // WebRtcAgc_Process as a "limiter" that turned out to be a
+        // hardcoded ~3:1 compressor with hidden makeup gain, not a real
+        // limiter -- see LevelerStep.h/CompressorLimiterStep.h. Both share
+        // one DiagnosticCsvLogger (diagnostic-only, no-op unless the
+        // backend was built with -DENABLE_AUDIO_DIAG_LOGGING=ON) so their
+        // ~10ms sub-chunk rows stay time-aligned in ~/agc_diag.csv for
+        // live A/B tuning. The leveler pulls the limiter's measured output
+        // loudness via a feedback callback -- construct the limiter first.
+        //
+        // NOTE (rebase onto f0a31f75, pre-upstream-reorder): on this older
+        // base, Equalizer was originally constructed *after* AGC. Moved it
+        // ahead of the leveler/limiter here to match the spec's NR+EQ-
+        // before-leveler order -- the fresh origin/v3.0-dev tip this branch
+        // was first based on had already reordered EQ before AGC upstream
+        // (independently, as part of the commits this rebase now excludes),
+        // which is why an earlier pass at this file found no reorder was
+        // needed; on this older base it genuinely is.
         auto eitherOrProcessAgc = new AudioPipeline(inputSampleRate_, inputSampleRate_);
         auto eitherOrBypassAgc = new AudioPipeline(inputSampleRate_, inputSampleRate_);
 
-        auto agcStep = new AgcStep(inputSampleRate_);
-        eitherOrProcessAgc->appendPipelineStep(agcStep);
+        auto agcDiagLogger = std::make_shared<DiagnosticCsvLogger>();
+        auto compressorLimiterStep = new CompressorLimiterStep(
+            inputSampleRate_,
+            agcDiagLogger,
+            // Live RNNoise on/off state (2026-09-24) -- picks between
+            // LoudnessMeter's two silence floors, see
+            // SILENCE_FLOOR_LUFS_RNNOISE_ON/OFF's own comment in
+            // CompressorLimiterStep.cpp. Same read as
+            // eitherOrRNNoiseStep's/LevelerStep's own gating condition.
+            +[]() FREEDV_NONBLOCKING { return (bool)NonblockingWxGetApp().appConfiguration.filterConfiguration.noiseReductionEnable.getWithoutProcessing(); });
+        // Seed from whatever the previous session's MainFrame::stopRxStream()
+        // saved (see FilterConfiguration.h's levelerGainDb/
+        // levelerIntegralErrorDb comment) -- 0.0f/0.0f (LevelerStep's own
+        // cold-start default) the first time FreeDV is ever run, or after a
+        // config reset.
+        levelerStep_ = new LevelerStep(
+            inputSampleRate_,
+            +[]() FREEDV_NONBLOCKING { return CompressorLimiterStep::getLastOutputLoudnessLufs(); },
+            agcDiagLogger,
+            NonblockingWxGetApp().appConfiguration.filterConfiguration.levelerGainDb.getWithoutProcessing(),
+            NonblockingWxGetApp().appConfiguration.filterConfiguration.levelerIntegralErrorDb.getWithoutProcessing(),
+            // Target LUFS (2026-09-24) -- config-file settable so different
+            // values can be tried via Stop/Start, no rebuild. See
+            // FilterConfiguration.h's levelerTargetLufs comment.
+            NonblockingWxGetApp().appConfiguration.filterConfiguration.levelerTargetLufs.getWithoutProcessing(),
+            // Live RNNoise on/off state (2026-09-21) -- picks between
+            // LevelerStep's two silence-freeze thresholds, see
+            // SILENCE_THRESHOLD_LUFS_RNNOISE_ON/OFF's own comment in
+            // LevelerStep.cpp. Same read as eitherOrRNNoiseStep's own
+            // gating condition above.
+            +[]() FREEDV_NONBLOCKING { return (bool)NonblockingWxGetApp().appConfiguration.filterConfiguration.noiseReductionEnable.getWithoutProcessing(); },
+            // Pause grace period (2026-09-30) -- config-file settable so
+            // different values can be tried via Stop/Start, no rebuild.
+            // See FilterConfiguration.h's levelerPauseGracePeriodSec comment.
+            NonblockingWxGetApp().appConfiguration.filterConfiguration.levelerPauseGracePeriodSec.getWithoutProcessing());
+        eitherOrProcessAgc->appendPipelineStep(levelerStep_);
+        eitherOrProcessAgc->appendPipelineStep(compressorLimiterStep);
 
         auto eitherOrAgcStep = new EitherOrStep(
             +[]() FREEDV_NONBLOCKING { return g_agcEnabled.load(std::memory_order_acquire); },
             eitherOrProcessAgc,
             eitherOrBypassAgc);
-        pipeline_->appendPipelineStep(eitherOrAgcStep); 
+        pipeline_->appendPipelineStep(eitherOrAgcStep);
 
-        // Resample for plot step (after AGC)
+        // Optional two-knee soft compressor, positioned outside/after the
+        // leveler/limiter feedback loop entirely (2026-09-21, Barry: "I
+        // wonder if there really is any advantage in wrapping the fast
+        // clipper inside the PI feedback loop. If it was outside we could
+        // use the 2 knee soft compression, which would curb some of the
+        // high peaks") -- see PostLoopCompressorStep.h's own comment for
+        // why it's deliberately standalone (no shared state with the loop
+        // above at all). Independently toggleable from AGC itself, for
+        // blind A/B testing (its own checkbox in dlg_filter.cpp, right
+        // next to AGC's). Defaults off -- new, unvalidated stage.
+        auto eitherOrProcessPostLoopCompressor = new AudioPipeline(inputSampleRate_, inputSampleRate_);
+        auto eitherOrBypassPostLoopCompressor = new AudioPipeline(inputSampleRate_, inputSampleRate_);
+        auto postLoopCompressorStep = new PostLoopCompressorStep(inputSampleRate_);
+        eitherOrProcessPostLoopCompressor->appendPipelineStep(postLoopCompressorStep);
+        auto eitherOrPostLoopCompressorStep = new EitherOrStep(
+            +[]() FREEDV_NONBLOCKING { return g_postLoopCompressorEnabled.load(std::memory_order_acquire); },
+            eitherOrProcessPostLoopCompressor,
+            eitherOrBypassPostLoopCompressor);
+        pipeline_->appendPipelineStep(eitherOrPostLoopCompressorStep);
+
+        // Resample for plot step (after the leveler/compressor-limiter and
+        // the optional post-loop compressor above -- matches PR #1464's
+        // "after AGC" tap; feeds the "From Mic" plot tab with the fully-
+        // processed output, per the spec's request).
         auto resampleForPlotStepAfterAGC = new ResampleForPlotStep(&g_plotSpeechInFifoAfterAGC);
         auto resampleForPlotPipelineAfterAGC = new AudioPipeline(inputSampleRate_, resampleForPlotStepAfterAGC->getOutputSampleRate());
 #if defined(ENABLE_FASTER_PLOTS)
@@ -266,7 +354,7 @@ void TxRxThread::initializePipeline_()
         {
             auto micAudioPipeline = new AudioPipeline(inputSampleRate_, equalizedMicAudioLink_->getSampleRate());
             micAudioPipeline->appendPipelineStep(equalizedMicAudioLink_->getInputPipelineStep());
-        
+
             auto micAudioTap = new TapStep(inputSampleRate_, micAudioPipeline);
             pipeline_->appendPipelineStep(micAudioTap);
         }
@@ -664,6 +752,25 @@ void* TxRxThread::Entry() noexcept
     processingStats_.report(m_tx, "processing");
     waitStats_.report(m_tx, "wait");
 #endif // defined(ENABLE_PROCESSING_STATS)
+
+    // Persist the leveler's final gain state to config (2026-09-20) so the
+    // next session (or a later run of the app) can resume from it instead
+    // of always starting cold at 0dB -- see FilterConfiguration.h's
+    // levelerGainDb/levelerIntegralErrorDb comment. Safe to read here with
+    // no synchronization: this is the same thread that was calling
+    // execute() (which is the only thing that ever mutates this state),
+    // and the loop above has just stopped calling it. Only sets the
+    // in-memory config value -- actually flushing it to disk (a real
+    // wxConfigBase::Write()) happens on the GUI thread afterward, in
+    // MainFrame::stopRxStream() once this thread has been joined, matching
+    // how every other config save in this codebase is done from the GUI
+    // thread.
+    if (levelerStep_ != nullptr)
+    {
+        NonblockingWxGetApp().appConfiguration.filterConfiguration.levelerGainDb.setWithoutProcessing(levelerStep_->getCurrentGainDb());
+        NonblockingWxGetApp().appConfiguration.filterConfiguration.levelerIntegralErrorDb.setWithoutProcessing(levelerStep_->getIntegralErrorDb());
+        levelerStep_ = nullptr;
+    }
 
     // Force pipeline to delete itself when we're done with the thread.
     pipeline_ = nullptr;

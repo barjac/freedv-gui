@@ -19,6 +19,7 @@
 //
 //==========================================================================
 
+#include <algorithm>
 #include <sstream>
 #include <set>
 #include <memory>
@@ -1268,7 +1269,23 @@ void FreeDVReporterDialog::FreeDVReporterDataModel::triggerResort()
     std::unique_lock<std::mutex> lk(fnQueueMtx_);
     CallbackHandler handler;
     handler.fn = [this](CallbackHandler&) {
-        Resort();
+        std::unique_lock<std::recursive_mutex> dataLk(dataMtx_);
+
+        // Use Cleared() rather than a plain Resort(). Resort() re-sorts
+        // whatever wx/GTK's DataViewCtrl currently has cached internally --
+        // if that cache is even slightly stale or inconsistent relative to
+        // our own model state (seen repeatedly crashing inside GTK's own
+        // array-sort code, before ever reaching Compare(), even after
+        // ensuring execQueuedAction_() yields to the event loop between
+        // handlers -- see freedv-gui issue #1495), Resort() has nothing to
+        // fall back on. Cleared() instead tells the control to fully
+        // discard its cache and re-fetch everything via GetChildren(),
+        // which the control then re-sorts as it repopulates -- same
+        // end result (a correctly sorted, up to date view), but without
+        // ever trusting a potentially-stale incremental cache. Already the
+        // established pattern elsewhere in this file (onFrequencyChangeFn_,
+        // "avoids spurious errors on macOS").
+        Cleared();
     };
     fnQueue_.push_back(std::move(handler));
     parent_->CallAfter(std::bind(&FreeDVReporterDialog::FreeDVReporterDataModel::execQueuedAction_, this));
@@ -2611,23 +2628,37 @@ double FreeDVReporterDialog::FreeDVReporterDataModel::RadiansToDegrees_(double r
 void FreeDVReporterDialog::FreeDVReporterDataModel::execQueuedAction_()
 {
     // This ensures that we handle server events in the order they're received.
+    //
+    // Deliberately processes only ONE handler per call, then re-schedules
+    // itself via CallAfter for the rest, rather than draining the whole
+    // queue in one uninterrupted loop -- during a burst of connection
+    // activity (many onUserConnectFn_/onUserDisconnectFn_ handlers queued
+    // in quick succession, often followed by a triggerResort()), running
+    // all of them back-to-back with no event-loop cycle in between gave
+    // wx/GTK's own internal DataViewCtrl bookkeeping no chance to catch up
+    // between a burst of ItemAdded()/ItemDeleted() calls and a subsequent
+    // Resort() -- observed crashing inside GTK's own children-array sort,
+    // before ever reaching Compare() (see freedv-gui issue #1495). FIFO
+    // ordering is preserved either way; only the "all in one go" timing
+    // changes.
     std::unique_lock<std::mutex> lk(fnQueueMtx_, std::defer_lock_t());
     lk.lock();
-    auto size = fnQueue_.size();
+    if (fnQueue_.empty())
+    {
+        lk.unlock();
+        return;
+    }
+
+    auto handler = std::move(fnQueue_.front());
+    fnQueue_.pop_front();
+    bool hasMore = !fnQueue_.empty();
     lk.unlock();
 
-    while(size > 0)
+    handler.fn(handler);
+
+    if (hasMore)
     {
-        lk.lock();
-        auto handler = std::move(fnQueue_[0]);
-        lk.unlock();
-
-        handler.fn(handler);
-
-        lk.lock();
-        fnQueue_.pop_front();
-        size = fnQueue_.size();
-        lk.unlock();
+        parent_->CallAfter(std::bind(&FreeDVReporterDialog::FreeDVReporterDataModel::execQueuedAction_, this));
     }
 }
 
@@ -3041,6 +3072,35 @@ int FreeDVReporterDialog::FreeDVReporterDataModel::Compare (const wxDataViewItem
     }
     auto leftData = (ReporterData*)item1.GetID();
     auto rightData = (ReporterData*)item2.GetID();
+
+    // Defensive: verify both pointers are still genuinely live entries in
+    // allReporterData_ before ever dereferencing them. wx/GTK's internal
+    // DataViewCtrl can retain a stale reference to an already-freed
+    // ReporterData* -- e.g. if a resort is still pending when
+    // deallocateRemovedItems()'s 1-second grace period expires during a
+    // burst of connection activity -- so this makes Compare() safe
+    // regardless of that timing, rather than relying on the grace period
+    // always being long enough (see freedv-gui issue #1495; that issue's
+    // fix in onUserConnectFn_ addresses one concrete cause, but this check
+    // guards the actual crash site against any such cause, present or
+    // future). Cost is a linear scan per comparison, acceptable given
+    // realistic Reporter roster sizes (tens to low hundreds of entries).
+    bool leftValid = std::any_of(allReporterData_.begin(), allReporterData_.end(),
+        [leftData](auto const& kvp) { return kvp.second == leftData; });
+    bool rightValid = std::any_of(allReporterData_.begin(), allReporterData_.end(),
+        [rightData](auto const& kvp) { return kvp.second == rightData; });
+
+    if (!leftValid || !rightValid)
+    {
+        // Treat a stale/dangling item as sorting after everything valid,
+        // consistent with the !IsOk() handling above -- never dereference it.
+        int result = 0;
+        if (!leftValid && !rightValid) result = 0;
+        else if (!leftValid) result = 1;
+        else result = -1;
+        result *= ascending ? 1 : -1;
+        return result;
+    }
 
     int result = 0;
     switch(column)
@@ -3651,7 +3711,31 @@ void FreeDVReporterDialog::FreeDVReporterDataModel::onUserConnectFn_(std::string
         if (existsIter != allReporterData_.end())
         {
             // Pending deletion prior to reconnect, so go ahead and delete now.
-            delete existsIter->second;
+            //
+            // Must notify the view first if this entry was visible --
+            // otherwise wx/GTK's internal tree model can retain a stale
+            // reference to this exact pointer (e.g. via a later resort
+            // triggered by an unrelated ItemAdded for some other station),
+            // causing a use-after-free the next time it resorts. This is
+            // the real root cause of a long-standing, reproducible SIGSEGV
+            // in Compare()/ResortChildrenIfNeeded during a burst of
+            // connection activity right after connecting. Same ItemDeleted()
+            // pattern already used correctly in onUserDisconnectFn_/
+            // clearAllEntries_ -- this path was just missing it.
+            auto oldItem = existsIter->second;
+            if (oldItem->isVisible)
+            {
+#if !defined(__linux__)
+                // For non-Linux/GTK, isVisible must be set to false prior to
+                // removal to avoid referencing deallocated memory during
+                // table updates (i.e. by macOS when adjusting column widths).
+                oldItem->isVisible = false;
+#endif // !defined(__linux__)
+
+                wxDataViewItem dvi(oldItem);
+                ItemDeleted(wxDataViewItem(nullptr), dvi);
+            }
+            delete oldItem;
         }
         allReporterData_[sid] = temp;
     };

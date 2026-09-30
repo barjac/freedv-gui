@@ -86,7 +86,38 @@ public:
     ConfigurationDataElement<bool> noiseReductionEnable;
     ConfigurationDataElement<bool> agcEnabled;
     ConfigurationDataElement<bool> bwExpandEnabled;
-    
+    // Independent, optional two-knee soft compressor positioned outside
+    // the leveler/limiter feedback loop (2026-09-21) -- see
+    // PostLoopCompressorStep.h in freedv-backend. Defaults off: new,
+    // unvalidated stage, not yet live A/B tested.
+    ConfigurationDataElement<bool> postLoopCompressorEnabled;
+
+    // LevelerStep's gain state, persisted across app sessions (2026-09-20)
+    // -- not just across transmissions/PTT within one session, which
+    // LevelerStep::reset() already handles on its own (see its comment in
+    // freedv-backend). Saved once a session's TxRxThread is torn down
+    // (MainFrame::stopRxStream()) and fed back in as the starting point
+    // for the next one (TxRxThread::initializePipeline_()), so a following
+    // session doesn't have to re-climb from a cold 0dB start. Defaults of
+    // 0.0f match LevelerStep's own cold-start default.
+    ConfigurationDataElement<float> levelerGainDb;
+    ConfigurationDataElement<float> levelerIntegralErrorDb;
+
+    // LevelerStep's target loudness (2026-09-24, Barry: "Can we add
+    // 'targetLUFS' in the settings to speed testing without rebuilds?") --
+    // was a fixed -23.0f constant in freedv-backend; now settable here so
+    // different values can be tried via a Stop/Start cycle, no rebuild.
+    // Default -23.0f matches the original constant/EBU R128 standard value.
+    ConfigurationDataElement<float> levelerTargetLufs;
+
+    // LevelerStep's pause grace period (2026-09-30, Barry: "Is the grace
+    // period accessible to change?", wanting to empirically test whether
+    // 300ms is enough for a large, still-converging correction to keep
+    // progressing through natural inter-word pauses) -- same rebuild-free
+    // testing pattern as levelerTargetLufs above. Default 0.3f matches
+    // LevelerStep's own original constant value.
+    ConfigurationDataElement<float> levelerPauseGracePeriodSec;
+
     virtual void load(wxConfigBase* config) override;
     virtual void save(wxConfigBase* config) override;
 };
