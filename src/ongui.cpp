@@ -1498,7 +1498,7 @@ void MainFrame::togglePTT(void) {
     // reset level gauge
 
     m_maxLevel = 0;
-    m_gaugeLevel->SetValue(0);
+    m_gaugeLevel->Reset();
     
     // Report TX change to registered reporters
     for (auto& obj : wxGetApp().m_reporters)

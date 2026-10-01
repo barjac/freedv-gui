@@ -37,6 +37,7 @@
 #include <wx/colour.h>
 #include <wx/settings.h>
 #include <wx/gauge.h>
+#include "gui/controls/LevelMeterLed.h"
 #include <wx/textctrl.h>
 #include <wx/sizer.h>
 #include <wx/statbox.h>
@@ -178,7 +179,7 @@ class TopFrame : public wxFrame
         wxStaticText* m_textSNR;
         wxCheckBox* m_ckboxSNR;
         TintedGroupBox* levelBox;
-        wxGauge* m_gaugeLevel;
+        LevelMeterLed* m_gaugeLevel;
         wxPanel* m_levelTargetMarker;
 
         wxTextCtrl*   m_txtCtrlCallSign;

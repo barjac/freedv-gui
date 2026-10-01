@@ -880,15 +880,19 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     //------------------------------
     levelBox = new TintedGroupBox(m_panel, _("Level"), wxHORIZONTAL, 1);
 
-    // Range must match LEVEL_GAUGE_MIN_DB (main.cpp's OnTimer() dB-to-value
-    // mapping only ever produces values in [0, LEVEL_GAUGE_MIN_DB]) -- a
-    // hardcoded 100 here meant the gauge could never visually fill past
-    // LEVEL_GAUGE_MIN_DB percent, no matter how loud the real signal was.
-    m_gaugeLevel = new wxGauge(levelBox, wxID_ANY, LEVEL_GAUGE_MIN_DB, wxDefaultPosition, wxSize(135,15), wxGA_SMOOTH);
+    // LED-style meter (2026-10-01, replacing the old continuous wxGauge --
+    // see LevelMeterLed.h for why). Calibration: 3dB/segment across the
+    // full LEVEL_GAUGE_MIN_DB range, amber starting at -9dBFS and red at
+    // -3dBFS -- red is centred exactly on -1.5dBFS, the compressor/
+    // limiter's real ceiling, with a 1.5dB margin either side (Barry's own
+    // spec). Checked against a real capture the same day: true peak is
+    // above -9dBFS only ~6% of real speech time and above -3dBFS ~0.1%, so
+    // this doesn't light amber/red too eagerly to stay meaningful.
+    // 13x8px segments -- width matches the old gauge's ~135px footprint
+    // (10 segments), height close to the old amber/green/red target-marker
+    // strip's 3px rather than the old gauge's own 15px.
+    m_gaugeLevel = new LevelMeterLed(levelBox, wxID_ANY, -LEVEL_GAUGE_MIN_DB, 0.0f, 3.0f, -9.0f, -3.0f, 13, 8);
     m_gaugeLevel->SetToolTip(_("Peak of From Radio in Rx, or peak of From Mic in Tx mode."));
-#if defined(__WXGTK__) && defined(HAS_GTK3)
-    gtk_style_context_add_class(gtk_widget_get_style_context(GTK_WIDGET(m_gaugeLevel->GetHandle())), "freedv-meter");
-#endif // defined(__WXGTK__) && defined(HAS_GTK3)
     levelBox->GetContentSizer()->Add(m_gaugeLevel, 1, wxALIGN_CENTER_VERTICAL|static_cast<int>(wxALL), 10);
 
     leftSizer->Add(levelBox, 0, static_cast<int>(wxALL)|static_cast<int>(wxEXPAND), 2);

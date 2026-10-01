@@ -2572,8 +2572,8 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
         if (maxDemodIn > m_maxLevel)
             m_maxLevel = maxDemodIn;
 
-        int maxScaled = m_maxLevel == 0 ? -LEVEL_GAUGE_MIN_DB : 20 * std::log10((float)m_maxLevel/32767.0); // log(0) is undefined
-        m_gaugeLevel->SetValue(std::max(-LEVEL_GAUGE_MIN_DB, maxScaled) + LEVEL_GAUGE_MIN_DB); // 1/32767 -> -30dB
+        float maxScaled = m_maxLevel == 0 ? -LEVEL_GAUGE_MIN_DB : 20.0f * std::log10((float)m_maxLevel/32767.0f); // log(0) is undefined
+        m_gaugeLevel->SetLevelDb(maxScaled); // clamps internally, no need for std::max() here
         m_maxLevel *= LEVEL_BETA;
     }
     else if (timerId == ID_TIMER_LEVEL_METER_TX && txState)
@@ -2626,19 +2626,13 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
 
         // Barry, 2026-09-19: with the raw tap above fixing the lag, a
         // visible flicker remained -- confirmed as a redraw/brightness
-        // artifact, not the bar's length genuinely jumping around. Root
-        // cause: SetValue() was called unconditionally every 25ms tick,
-        // even though the small per-tick decay step often doesn't move the
-        // rounded integer value at all -- if the GTK theme does any kind
-        // of highlight/fade on each explicit SetValue(), redrawing 40x/sec
-        // regardless of whether anything visibly changed would produce
-        // exactly this. Only call it when the displayed value actually
-        // changes.
-        int newGaugeValueTx = std::max(-LEVEL_GAUGE_MIN_DB, (int)m_maxLevelDbTx) + LEVEL_GAUGE_MIN_DB;
-        if (newGaugeValueTx != m_gaugeLevel->GetValue())
-        {
-            m_gaugeLevel->SetValue(newGaugeValueTx);
-        }
+        // artifact, not the bar's length genuinely jumping around, caused
+        // by calling SetValue() unconditionally every 25ms tick even when
+        // the displayed value hadn't moved. LevelMeterLed::SetLevelDb()
+        // (2026-10-01) now does that same "only repaint if the displayed
+        // value actually changed" check internally, so this call site no
+        // longer needs to duplicate it.
+        m_gaugeLevel->SetLevelDb(m_maxLevelDbTx);
 
         // AGC/leveler gain plot (2026-09-28) -- see its construction's own
         // comment. Piggybacks on this same fast TX-only timer tick rather
@@ -2850,8 +2844,8 @@ void MainFrame::performFreeDVOn_()
     m_maxLevelDbTx = -LEVEL_GAUGE_MIN_DB;
     executeOnUiThreadAndWait_([&]()
     {
-        m_gaugeLevel->SetValue(0);
-        
+        m_gaugeLevel->Reset();
+
         if (wxGetApp().logger != nullptr)
         {
             m_logQSO->Enable(true);
