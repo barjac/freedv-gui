@@ -34,18 +34,14 @@
 // Minimum level for the Level gauge, negated.
 #define LEVEL_GAUGE_MIN_DB 30
 
-// Acceptable-range marker drawn as a thin coloured strip above the level
-// meter's gauge, in % of the gauge's own 0-100 scale (amber below, green
-// within, red above). Ported from upstream PR #1464 (log-scale meter) with
-// PR #1472's colour-band idea folded in by Mooneer at these percentages.
-// HIGH_PCT lowered from Mooneer's 85 back to PR #1472's own original 70
-// (2026-09-19, Barry): "too lenient" at 85 (-4.5dBFS on this branch's -30
-// to 0dB log scale) -- audio could sit uncomfortably close to true
-// clipping before the meter's red zone ever warned about it. 70 (-9dBFS)
-// matches the threshold from the original EMA-meter design's own live
-// testing, before Mooneer's later log-scale port widened it.
-#define LEVEL_METER_TARGET_LOW_PCT  30
-#define LEVEL_METER_TARGET_HIGH_PCT 70
+// LEVEL_METER_TARGET_LOW_PCT/HIGH_PCT (the old amber/green/red marker strip
+// drawn above the gauge) and the strip itself are gone as of 2026-10-01 --
+// superseded by LevelMeterLed's own green/amber/red segments, which show
+// the same information directly on the meter instead of a separate static
+// reference strip. Worth noting for history: HIGH_PCT's last value (70,
+// i.e. -9dBFS on this branch's -30..0dB scale) is the exact same -9dBFS
+// amber threshold LevelMeterLed's calibration independently landed on,
+// confirmed again that day against a real capture.
 
 // Spectrogram and Waterfall
 

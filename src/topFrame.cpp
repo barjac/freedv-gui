@@ -571,41 +571,22 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     wxStaticBox* levelBox = new wxStaticBox(m_panel, wxID_ANY, _("Level"), wxDefaultPosition, wxSize(100,-1));
     levelSizer = new wxStaticBoxSizer(levelBox, wxVERTICAL);
 
-    // Thin static strip marking the acceptable range (LEVEL_METER_TARGET_LOW_PCT
-    // to LEVEL_METER_TARGET_HIGH_PCT) just above the gauge -- a plain painted
-    // panel rather than a custom meter widget. Always visible (never
-    // Show()/Hide()'d) -- GTK doesn't finish allocating a widget's real
-    // on-screen position until it's been shown once, so toggling visibility
-    // risks stale/zeroed geometry; this stays always-shown by design.
-    m_levelTargetMarker = new wxPanel(levelBox, wxID_ANY, wxDefaultPosition, wxSize(135,3));
-    m_levelTargetMarker->SetToolTip(_("Acceptable level range (amber = too low, green = target, red = too high)"));
-    m_levelTargetMarker->Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
-        wxPaintDC dc(m_levelTargetMarker);
-        wxSize sz = m_levelTargetMarker->GetClientSize();
-        dc.SetBackground(wxBrush(m_levelTargetMarker->GetParent()->GetBackgroundColour()));
-        dc.Clear();
-
-        int loX = sz.GetWidth() * LEVEL_METER_TARGET_LOW_PCT / 100;
-        int hiX = sz.GetWidth() * LEVEL_METER_TARGET_HIGH_PCT / 100;
-        dc.SetPen(*wxTRANSPARENT_PEN);
-        dc.SetBrush(wxBrush(wxColour(255, 165, 0)));
-        dc.DrawRectangle(0, 0, loX, sz.GetHeight());
-        dc.SetBrush(wxBrush(wxColour(0, 200, 0)));
-        dc.DrawRectangle(loX, 0, hiX - loX, sz.GetHeight());
-        dc.SetBrush(wxBrush(*wxRED));
-        dc.DrawRectangle(hiX, 0, sz.GetWidth() - hiX, sz.GetHeight());
-    });
-    levelSizer->Add(m_levelTargetMarker, 0, static_cast<int>(wxALIGN_CENTER_HORIZONTAL));
-
-    // wxGA_SMOOTH removed 2026-09-19 (Barry: TX meter flicker confirmed as
-    // a rendering/brightness artifact, not the value genuinely jumping
-    // around) -- this flag requests a "smooth, continuous" gauge style,
-    // which on GTK plausibly maps to GtkProgressBar's own animated-
-    // transition fill rendering. At the TX meter's new 40Hz update rate, a
-    // new value arriving before a prior transition animation finishes
-    // would look exactly like this. wxGA_HORIZONTAL is the same default
-    // orientation wxGA_SMOOTH was silently combined with before.
-    m_gaugeLevel = new wxGauge(levelBox, wxID_ANY, LEVEL_GAUGE_MIN_DB, wxDefaultPosition, wxSize(135,15), wxGA_HORIZONTAL); // log scale, -30 dB to 0 dB
+    // LED-style meter (2026-10-01, replacing the old continuous wxGauge and
+    // its separate amber/green/red target-marker strip above it -- see
+    // LevelMeterLed.h for why the gauge was replaced; the marker strip is
+    // dropped too since the LED segments now show the same green/amber/red
+    // zones directly, making a separate static reference strip redundant).
+    // Calibration: 3dB/segment across the full LEVEL_GAUGE_MIN_DB range,
+    // amber starting at -9dBFS and red at -3dBFS -- red is centred exactly
+    // on -1.5dBFS, the compressor/limiter's real ceiling, with a 1.5dB
+    // margin either side (Barry's own spec). Checked against a real
+    // capture the same day: true peak is above -9dBFS only ~6% of real
+    // speech time and above -3dBFS ~0.1%, so this doesn't light amber/red
+    // too eagerly to stay meaningful.
+    // 13x8px segments -- width matches the old gauge's ~135px footprint
+    // (10 segments), height close to the old target-marker strip's 3px
+    // rather than the old gauge's own 15px.
+    m_gaugeLevel = new LevelMeterLed(levelBox, wxID_ANY, -LEVEL_GAUGE_MIN_DB, 0.0f, 3.0f, -9.0f, -3.0f, 13, 8);
     m_gaugeLevel->SetToolTip(_("RX: Peak level of radio's audio output, TX: Peak level of microphone audio as recorded by FreeDV (before AGC/level settings)."));
     levelSizer->Add(m_gaugeLevel, 1, static_cast<int>(wxALIGN_CENTER_HORIZONTAL)|static_cast<int>(wxALL), 10);
 
