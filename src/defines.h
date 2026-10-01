@@ -89,7 +89,15 @@
 // matches LEVELER_GAIN_LIMIT_DB (LevelerStep.cpp, backend) exactly, so
 // the plot can now show the leveler's true full range instead of an
 // arbitrarily tighter one.
-#define AGC_GAIN_PLOT_SECONDS (15)
+// Narrowed from 15s to 10s (2026-10-01, Barry: "maybe the AGC dB plot was
+// maybe a bit slow maybe 10s would be enough") -- a wide window visually
+// compresses real sub-second gain movement (confirmed against a real
+// loudness-feedback capture the same day: a syllable's whole rise/fall,
+// clearly visible zoomed in, looks like a thin spike at a wide timebase).
+// Narrowing gives the same screen width to fewer seconds, so recent
+// movement reads larger/clearer without changing the underlying ballistics
+// at all -- a display-only change.
+#define AGC_GAIN_PLOT_SECONDS (10)
 #define AGC_GAIN_PLOT_SECOND_SEGMENTS (5)
 #define MIN_AGC_GAIN_PLOT_VAL (-12)
 #define MAX_AGC_GAIN_PLOT_VAL (12)
