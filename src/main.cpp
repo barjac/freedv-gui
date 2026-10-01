@@ -2561,8 +2561,9 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
         // it upstream) is superseded by the amber/green/red target-range
         // marker drawn just above the gauge (see topFrame.cpp). Decays the
         // *linear* peak value by a constant factor each tick (LEVEL_BETA) --
-        // see defines.h's LEVEL_METER_TX_DECAY_TIME_CONSTANT_SEC comment for
-        // why the TX side below does this differently.
+        // see defines.h's LEVEL_METER_TX_DECAY_DB_PER_SEC comment for the TX
+        // side below, which applies the mathematically equivalent decay
+        // directly in dB instead (it already tracks its value in dB).
         int maxDemodIn = 0;
         for(int i=0; i<WAVEFORM_PLOT_BUF; i++)
             if (maxDemodIn < abs(demodInPlotSamples[i]))
@@ -2612,12 +2613,15 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
         }
         else
         {
-            // Exponential decay applied directly to the *displayed* dB
-            // value (not the linear amplitude the RX side above uses) --
-            // visibly decelerates as it nears the gauge's floor, rather
-            // than dropping at a constant rate all the way down.
-            static const float alpha = 1.0f - std::exp(-LEVEL_METER_TX_REFRESH_PERIOD_SEC / LEVEL_METER_TX_DECAY_TIME_CONSTANT_SEC);
-            m_maxLevelDbTx += (-LEVEL_GAUGE_MIN_DB - m_maxLevelDbTx) * alpha;
+            // Linear dB/s decay -- see defines.h's LEVEL_METER_TX_DECAY_DB_PER_SEC
+            // comment: this is the real PPM-style ballistics shape (a
+            // constant fall rate), not the exponential-toward-floor curve
+            // this used to be.
+            m_maxLevelDbTx -= LEVEL_METER_TX_DECAY_DB_PER_SEC * LEVEL_METER_TX_REFRESH_PERIOD_SEC;
+            if (m_maxLevelDbTx < -LEVEL_GAUGE_MIN_DB)
+            {
+                m_maxLevelDbTx = -LEVEL_GAUGE_MIN_DB;
+            }
         }
 
         // Barry, 2026-09-19: with the raw tap above fixing the lag, a

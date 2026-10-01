@@ -126,8 +126,9 @@
 //   LEVEL_BETA = 10^(-6*DT/20) = 10^(-0.03) ≈ 0.933   (for DT = 0.10)
 // => -0.60 dB per timer fire; the 30 dB gauge range fully decays in 5 s.
 // Still used by the RX ("From Radio") side of the shared level gauge --
-// see LEVEL_METER_TX_DECAY_TIME_CONSTANT_SEC below for the TX ("From Mic")
-// side's own, differently-shaped decay.
+// see LEVEL_METER_TX_DECAY_DB_PER_SEC below for the TX ("From Mic")
+// side's own decay rate (same linear-dB/s shape as this one, matched
+// against the real BBC/IEC PPM spec instead of live-tuned by ear).
 #define LEVEL_DECAY_DB_PER_SEC 6.0
 #define LEVEL_BETA (std::pow(10.0, -LEVEL_DECAY_DB_PER_SEC * DT / 20.0))
 
@@ -193,22 +194,38 @@
 // at this more generous value (was 4096) since there's no cost to it.
 #define LEVEL_METER_TX_RAW_BUF_MAX 16384
 
-// Decay curve: the RX side's LEVEL_BETA decays the *linear* amplitude value
-// by a constant multiplicative factor every tick -- mathematically a genuine
-// exponential decay (the same behavior a real analog R/C meter circuit has
-// in the voltage/amplitude domain), but because the gauge display is
-// dB-scaled (logarithmic), an exponential decay in linear amplitude maps to
-// a perfectly straight, constant-slope line in dB terms -- reported as
-// "drops right down to the bottom" between words. A curve that visibly
-// *decelerates* as it nears the gauge's floor needs the exponential decay
-// applied directly to the displayed dB value instead (the opposite of what
-// a literal R/C circuit does, but closer to the requested visual behavior):
-//   displayedDb += (floorDb - displayedDb) * (1 - exp(-dt/tau))
-// 1.5s starting value reuses the "plateau" time constant from the earlier,
-// separate EMA-meter design's own live-tuned value (see
-// project_level_meter_simple_fix.md/LEVEL_METER_TIME_CONSTANT_SEC) as an
-// informed guess, not re-derived from scratch -- not yet live-tested here.
-#define LEVEL_METER_TX_DECAY_TIME_CONSTANT_SEC 1.5
+// Decay curve (corrected 2026-10-01, Barry: "the level meter is still not
+// suitable... maybe we just need the ballistics getting right"): a real
+// analog PPM (Peak Programme Meter) decays by discharging through a simple
+// R/C circuit in the *linear* voltage domain -- and because the dB scale is
+// already logarithmic, an exponential decay in linear voltage maps to a
+// perfectly straight, *constant-rate* line in dB terms. That's exactly what
+// the RX side's LEVEL_BETA already does (decays the linear amplitude value
+// by a constant factor per tick), and exactly what made real moving-coil
+// PPMs easy to read: the needle falls at one steady, predictable rate, full
+// stop -- not fast right after a peak and decelerating into a crawl near
+// the floor.
+//
+// The previous version of this comment/define did the opposite on purpose
+// (an exponential decay applied directly to the already-logarithmic
+// *displayed* dB value, to get a curve that "visibly decelerates near the
+// floor") -- plausible-sounding, but the wrong shape entirely, and the
+// likely cause of two related complaints: the meter never feeling
+// "suitable," and brief loud peaks appearing to barely register (fast
+// initial fall right after any peak, before the eye can track it, then a
+// long crawl at low level in between).
+//
+// Real BBC/IEC 60268-10 Type I PPM ballistics (sourced 2026-10-01): ~1.7ms
+// effective attack time constant (fast enough to look instant at this
+// meter's 25ms tick -- no change needed, instant-attack already matches),
+// and a 24dB/2.8s ~= 8.7 dB/s *constant* decay rate. Applied here as a
+// plain linear subtraction on the dB value per tick (mathematically
+// identical to the RX side's linear-amplitude exponential decay, just
+// expressed directly in dB since this meter already tracks its value in
+// dB) -- not yet live-tested against the real BBC rate; worth comparing by
+// ear/eye against LEVEL_DECAY_DB_PER_SEC's own live-tuned 6.0 (Barry,
+// 2026-09-16) in case the mic path prefers something closer to that.
+#define LEVEL_METER_TX_DECAY_DB_PER_SEC 8.7
 
 // TX Attenuation (0.1 dB increments)
 #define TX_ATTENUATION_MIN (-300) /* -30 dB */
