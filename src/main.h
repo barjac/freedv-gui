@@ -566,7 +566,7 @@ class MainFrame : public TopFrame
 
         // TX ("From Mic") level gauge's own displayed value, already in dB
         // (not linear amplitude like m_maxLevel above) -- see
-        // LEVEL_METER_TX_DECAY_TIME_CONSTANT_SEC in defines.h for why.
+        // LEVEL_METER_TX_DECAY_DB_PER_SEC in defines.h for why.
         float       m_maxLevelDbTx;
 
         // flags to indicate when new EQ filters need to be designed
