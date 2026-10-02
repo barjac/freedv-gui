@@ -56,7 +56,6 @@ extern wxConfigBase *pConfig;
 extern wxMutex g_mutexProtectingCallbackData;
 extern std::atomic<bool> g_agcEnabled;
 extern std::atomic<bool> g_bwExpandEnabled;
-extern std::atomic<bool> g_postLoopCompressorEnabled;
 
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=--=-=-=-=
 // Class FilterDlg
@@ -94,11 +93,7 @@ FilterDlg::FilterDlg(wxWindow* parent, bool running, bool *newMicInFilter, bool 
     
     m_ckboxAgcEnabled = new wxCheckBox(sb_rnnoise, wxID_ANY, _("AGC"), wxDefaultPosition, wxDefaultSize, wxCHK_2STATE);
     sbSizer_rnnoise->Add(m_ckboxAgcEnabled, 0, static_cast<int>(wxALL) | wxALIGN_LEFT, 5);
-    m_ckboxAgcEnabled->SetToolTip(_("Automatic gain control for microphone"));
-
-    m_ckboxPostLoopCompressorEnabled = new wxCheckBox(sb_rnnoise, wxID_ANY, _("TX Compressor"), wxDefaultPosition, wxDefaultSize, wxCHK_2STATE);
-    sbSizer_rnnoise->Add(m_ckboxPostLoopCompressorEnabled, 0, static_cast<int>(wxALL) | wxALIGN_LEFT, 5);
-    m_ckboxPostLoopCompressorEnabled->SetToolTip(_("Experimental: additional two-knee soft compression, applied after AGC, to curb high peaks"));
+    m_ckboxAgcEnabled->SetToolTip(_("Automatic level control for microphone. Peak limiting stays on when this is off."));
 
     bSizer30->Add(sbSizer_rnnoise, 0, static_cast<int>(wxALL) | static_cast<int>(wxEXPAND), 5);
 
@@ -243,7 +238,6 @@ FilterDlg::FilterDlg(wxWindow* parent, bool running, bool *newMicInFilter, bool 
 
     m_ckboxNoiseReduction->Connect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxScrollEventHandler(FilterDlg::OnNoiseReductionEnable), NULL, this);
     m_ckboxAgcEnabled->Connect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxScrollEventHandler(FilterDlg::OnAgcEnable), NULL, this);
-    m_ckboxPostLoopCompressorEnabled->Connect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxScrollEventHandler(FilterDlg::OnPostLoopCompressorEnable), NULL, this);
     m_ckboxBwExpandEnabled->Connect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxScrollEventHandler(FilterDlg::OnBwExpandEnable), NULL, this);
 
     int events[] = {
@@ -297,7 +291,6 @@ FilterDlg::~FilterDlg()
 
     m_ckboxNoiseReduction->Disconnect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxScrollEventHandler(FilterDlg::OnNoiseReductionEnable), NULL, this);
     m_ckboxAgcEnabled->Disconnect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxScrollEventHandler(FilterDlg::OnAgcEnable), NULL, this);
-    m_ckboxPostLoopCompressorEnabled->Disconnect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxScrollEventHandler(FilterDlg::OnPostLoopCompressorEnable), NULL, this);
     m_ckboxBwExpandEnabled->Disconnect(wxEVT_COMMAND_CHECKBOX_CLICKED, wxScrollEventHandler(FilterDlg::OnBwExpandEnable), NULL, this);
     
     int events[] = {
@@ -431,9 +424,6 @@ void FilterDlg::ExchangeData(int inout)
         // AGC
         m_ckboxAgcEnabled->SetValue(wxGetApp().appConfiguration.filterConfiguration.agcEnabled);
 
-        // Post-loop compressor
-        m_ckboxPostLoopCompressorEnabled->SetValue(wxGetApp().appConfiguration.filterConfiguration.postLoopCompressorEnabled);
-
         // BW Expand
         m_ckboxBwExpandEnabled->SetValue(wxGetApp().appConfiguration.filterConfiguration.bwExpandEnabled);
 
@@ -514,9 +504,6 @@ void FilterDlg::ExchangeData(int inout)
         
         // AGC
         wxGetApp().appConfiguration.filterConfiguration.agcEnabled = m_ckboxAgcEnabled->GetValue();
-
-        // Post-loop compressor
-        wxGetApp().appConfiguration.filterConfiguration.postLoopCompressorEnabled = m_ckboxPostLoopCompressorEnabled->GetValue();
 
         // BW Expand
         wxGetApp().appConfiguration.filterConfiguration.bwExpandEnabled = m_ckboxBwExpandEnabled->GetValue();
@@ -667,12 +654,6 @@ void FilterDlg::OnAgcEnable(wxScrollEvent&) {
     updateControlState();
 }
 
-void FilterDlg::OnPostLoopCompressorEnable(wxScrollEvent&) {
-    wxGetApp().appConfiguration.filterConfiguration.postLoopCompressorEnabled = m_ckboxPostLoopCompressorEnabled->GetValue();
-    g_postLoopCompressorEnabled.store(wxGetApp().appConfiguration.filterConfiguration.postLoopCompressorEnabled, std::memory_order_release); // forces immediate change at pipeline level
-    ExchangeData(EXCHANGE_DATA_OUT);
-}
-
 void FilterDlg::OnBwExpandEnable(wxScrollEvent&) {
     wxGetApp().appConfiguration.filterConfiguration.bwExpandEnabled = m_ckboxBwExpandEnabled->GetValue();
     g_bwExpandEnabled.store(wxGetApp().appConfiguration.filterConfiguration.bwExpandEnabled, std::memory_order_release); // forces immediate change at pipeline level
@@ -682,7 +663,6 @@ void FilterDlg::OnBwExpandEnable(wxScrollEvent&) {
 void FilterDlg::updateControlState()
 {
     m_ckboxAgcEnabled->Enable(true);
-    m_ckboxPostLoopCompressorEnabled->Enable(true);
 
     m_MicInBass.sliderFreq->Enable(wxGetApp().appConfiguration.filterConfiguration.micInChannel.eqEnable);
     m_MicInBass.sliderGain->Enable(wxGetApp().appConfiguration.filterConfiguration.micInChannel.eqEnable);

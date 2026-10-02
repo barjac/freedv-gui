@@ -128,11 +128,6 @@ std::atomic<bool>  g_half_duplex;
 std::atomic<bool>  g_voice_keyer_tx;
 std::atomic<bool>  g_agcEnabled;
 std::atomic<bool>  g_bwExpandEnabled;
-// Independent, optional two-knee soft compressor positioned *outside* the
-// LevelerStep/CompressorLimiterStep feedback loop (2026-09-21) -- see
-// PostLoopCompressorStep.h in freedv-backend for why it's deliberately kept
-// separate from that loop, and TxRxThread.cpp for its wiring.
-std::atomic<bool>  g_postLoopCompressorEnabled;
 
 // tx/rx processing states
 std::atomic<int>                 g_State, g_prev_State;
@@ -952,7 +947,6 @@ void MainFrame::loadConfiguration_()
         // Mic level should be reset to 0 if AGC is enabled.
         wxGetApp().appConfiguration.filterConfiguration.micInChannel.volInDB = 0;
     }
-    g_postLoopCompressorEnabled.store(wxGetApp().appConfiguration.filterConfiguration.postLoopCompressorEnabled, std::memory_order_release);
 
 
     // Load BW expander state
@@ -2573,6 +2567,7 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
             m_maxLevel = maxDemodIn;
 
         float maxScaled = m_maxLevel == 0 ? -LEVEL_GAUGE_MIN_DB : 20.0f * std::log10((float)m_maxLevel/32767.0f); // log(0) is undefined
+        m_gaugeLevel->SetZoneColours(false);
         m_gaugeLevel->SetLevelDb(maxScaled); // clamps internally, no need for std::max() here
         m_maxLevel *= LEVEL_BETA;
     }
@@ -2632,6 +2627,7 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
         // (2026-10-01) now does that same "only repaint if the displayed
         // value actually changed" check internally, so this call site no
         // longer needs to duplicate it.
+        m_gaugeLevel->SetZoneColours(true);
         m_gaugeLevel->SetLevelDb(m_maxLevelDbTx);
 
         // AGC/leveler gain plot (2026-09-28) -- see its construction's own

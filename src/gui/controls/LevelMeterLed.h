@@ -1,7 +1,7 @@
 //==========================================================================
 // Name:            LevelMeterLed.h
 // Purpose:         A compact, custom-drawn LED-style level meter.
-// Authors:         Claude Code (for Barry Jones, G4MKT)
+// Authors:         Claude Code (for Barry Jackson, G4MKT)
 //
 // License:
 //
@@ -22,24 +22,17 @@
 
 #include <wx/wx.h>
 
-// Replaces the old continuous wxGauge-based Level meter (2026-10-01, Barry:
-// "It seems rather jittery on the decay, steps are not fast enough to look
-// smooth to the human eye... maybe an led style bar graph would be
-// better"). A wxGauge has no smoothing of its own and only integer-dB
-// resolution across a narrow pixel width, so a slow linear dB/s decay
-// necessarily looks steppy on it -- an LED-style meter doesn't have this
-// problem at all, since discrete steps are the correct look for it, not an
-// artifact to hide.
+// LED bargraph level meter. A wxGauge has only integer resolution across a
+// narrow width and no smoothing of its own, so a steady dB/sec decay looks
+// jittery on it; discrete LED steps are the expected look for a peak meter.
+// Custom-drawn so it looks and behaves the same on every platform.
 //
-// Rectangular segments (width/height independently settable -- Barry's own
-// spec, 2026-10-01: segment width sized to fill the same width the old
-// gauge occupied, but only 8px tall, closer to the old amber/green/red
-// target-marker strip's look than to the old gauge's own 15px height), no
-// gaps between them, coloured in three zones (green/amber/red). Segment
-// width in dB is fixed (segmentDb); segment count is derived from the
-// min/max range so the calibration (where amber/red start) is set purely
-// by minDb/maxDb/segmentDb/amberStartDb/redStartDb, not by an arbitrary
-// segment count chosen first.
+// Segments are segmentDb wide, spanning minDb..maxDb, butted together with
+// no gaps. With zone colours on, segments are green, then amber from
+// amberStartDb, then red from redStartDb. With zone colours off, every
+// segment is the same fixed blue. Fixed colours (not theme colours) keep
+// the meter readable when the window is unfocused. Unlit segments are a
+// neutral mid grey, which stays visible on both light and dark themes.
 class LevelMeterLed : public wxWindow
 {
     public:
@@ -51,18 +44,15 @@ class LevelMeterLed : public wxWindow
             const wxPoint& pos = wxDefaultPosition);
         virtual ~LevelMeterLed() = default;
 
-        // Sets the displayed level. Internally clamped to [minDb, maxDb] --
-        // callers don't need to clamp before calling, unlike the old
-        // wxGauge-based code's own std::max() call at each use site.
-        // Only triggers a repaint if the number of lit segments actually
-        // changed (same flicker-avoidance principle as the old gauge code's
-        // own "only call SetValue when the displayed integer changes"
-        // check, but encapsulated here instead of duplicated at each call
-        // site).
+        // Sets the displayed level, clamped to [minDb, maxDb]. Only
+        // repaints if the number of lit segments changes.
         void SetLevelDb(float db);
 
         // Equivalent to SetLevelDb(minDb) -- all segments off.
         void Reset();
+
+        // true: green/amber/red zones. false (default): all segments blue.
+        void SetZoneColours(bool enabled);
 
         virtual wxSize DoGetBestSize() const override;
 
@@ -79,6 +69,7 @@ class LevelMeterLed : public wxWindow
         int numSegments_;
         float currentDb_;
         int litSegments_;
+        bool zoneColours_;
 };
 
 #endif // __FREEDV_LEVEL_METER_LED__

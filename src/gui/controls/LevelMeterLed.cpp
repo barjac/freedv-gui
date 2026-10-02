@@ -1,7 +1,7 @@
 //==========================================================================
 // Name:            LevelMeterLed.cpp
 // Purpose:         A compact, custom-drawn LED-style level meter.
-// Authors:         Claude Code (for Barry Jones, G4MKT)
+// Authors:         Claude Code (for Barry Jackson, G4MKT)
 //
 // License:
 //
@@ -17,13 +17,15 @@
 //  along with this program; if not, see <http://www.gnu.org/licenses/>.
 //
 //==========================================================================
+
 #include <cmath>
 #include <algorithm>
 
 #include <wx/dcbuffer.h>
+#include <wx/settings.h>
 
 #include "LevelMeterLed.h"
-#include "../../topFrame.h" // GroupBoxBackgroundColour()/GetGroupBoxForegroundColour()
+#include "../../topFrame.h" // GroupBoxBackgroundColour() (PR #1445 tinted group boxes)
 
 LevelMeterLed::LevelMeterLed(
     wxWindow* parent, wxWindowID id,
@@ -41,6 +43,7 @@ LevelMeterLed::LevelMeterLed(
     , segmentHeightPx_(segmentHeightPx)
     , currentDb_(minDb)
     , litSegments_(0)
+    , zoneColours_(false)
 {
     numSegments_ = (int)std::lround((maxDb_ - minDb_) / segmentDb_);
 
@@ -59,19 +62,23 @@ void LevelMeterLed::Reset()
     SetLevelDb(minDb_);
 }
 
+void LevelMeterLed::SetZoneColours(bool enabled)
+{
+    if (enabled != zoneColours_)
+    {
+        zoneColours_ = enabled;
+        Refresh(false);
+    }
+}
+
 void LevelMeterLed::SetLevelDb(float db)
 {
     if (db < minDb_) db = minDb_;
     if (db > maxDb_) db = maxDb_;
     currentDb_ = db;
 
-    // Segment i (lower bound minDb_ + i*segmentDb_) lights as soon as the
-    // level rises *above* that lower bound -- ceil (not floor) so that
-    // exactly at the absolute floor (currentDb_ == minDb_) zero segments
-    // are lit (important for Reset()), while still lighting segment i
-    // immediately on crossing its own threshold, e.g. amber's first
-    // segment lights right as the level exceeds amberStartDb_, not only
-    // once it reaches the *next* segment's threshold.
+    // Segment i lights as soon as the level rises above its lower bound
+    // (minDb_ + i*segmentDb_); ceil() so that exactly minDb_ lights none.
     int newLit = (int)std::ceil((currentDb_ - minDb_) / segmentDb_);
     newLit = std::max(0, std::min(numSegments_, newLit));
 
@@ -86,28 +93,26 @@ void LevelMeterLed::OnPaint(wxPaintEvent&)
 {
     wxAutoBufferedPaintDC dc(this);
 
+    // Normally fully covered by segments; the clear only matters if the
+    // widget is ever given more space than DoGetBestSize().
     dc.SetBackground(wxBrush(GroupBoxBackgroundColour()));
     dc.Clear();
 
     static const wxColour GREEN(0, 200, 0);
     static const wxColour AMBER(230, 160, 0);
     static const wxColour RED(220, 30, 30);
-    const float DIM_FACTOR = 0.22f; // unlit segments show a dim version of their eventual colour
+    static const wxColour BLUE(60, 145, 240);
+    static const wxColour UNLIT(128, 128, 128); // mid grey, visible on light and dark themes
 
-    dc.SetPen(*wxTRANSPARENT_PEN); // segments butt together, no per-segment borders
+    dc.SetPen(*wxTRANSPARENT_PEN);
 
     for (int i = 0; i < numSegments_; i++)
     {
         float lowerDb = minDb_ + i * segmentDb_;
-        wxColour zoneColour = (lowerDb >= redStartDb_) ? RED : (lowerDb >= amberStartDb_) ? AMBER : GREEN;
+        wxColour zoneColour = !zoneColours_ ? BLUE :
+            (lowerDb >= redStartDb_) ? RED : (lowerDb >= amberStartDb_) ? AMBER : GREEN;
 
-        bool lit = i < litSegments_;
-        wxColour fillColour = lit
-            ? zoneColour
-            : wxColour(
-                (unsigned char)(zoneColour.Red() * DIM_FACTOR),
-                (unsigned char)(zoneColour.Green() * DIM_FACTOR),
-                (unsigned char)(zoneColour.Blue() * DIM_FACTOR));
+        wxColour fillColour = (i < litSegments_) ? zoneColour : UNLIT;
 
         dc.SetBrush(wxBrush(fillColour));
         dc.DrawRectangle(i * segmentWidthPx_, 0, segmentWidthPx_, segmentHeightPx_);
