@@ -280,11 +280,19 @@ void MainFrame::OnTogBtnRecord(wxCommandEvent& event)
                 extension = _("wav");
             }
 
+            // RADE version ("V1"/"V2") in the file name: raw off-air
+            // recordings from the two versions can't otherwise be told apart.
+            wxString modeTag = wxString::FromUTF8(freedvInterface.getCurrentModeStr());
+            if (modeTag.StartsWith("RADE"))
+            {
+                modeTag = modeTag.Mid(4);
+            }
+
             if (recordDialog.isRawRecording())
             {
                 soundFileRaw = wxFileName(
                     wxGetApp().appConfiguration.quickRecordRawPath,
-                    wxString::Format(_("%s_%s.%s"), _("FDV_FromRadio"), filenameSuffix, extension))
+                    wxString::Format(_("%s_%s_%s.%s"), _("FDV_FromRadio"), modeTag, filenameSuffix, extension))
                     .GetFullPath();
                 log_info("Recording raw to %s", (const char*)soundFileRaw.ToUTF8());
             }
@@ -292,7 +300,7 @@ void MainFrame::OnTogBtnRecord(wxCommandEvent& event)
             {
                 soundFileDecoded = wxFileName(
                     wxGetApp().appConfiguration.quickRecordDecodedPath,
-                    wxString::Format(_("%s_%s.%s"), _("FDV_FromDecoder"), filenameSuffix, extension))
+                    wxString::Format(_("%s_%s_%s.%s"), _("FDV_FromDecoder"), modeTag, filenameSuffix, extension))
                     .GetFullPath();
                 log_info("Recording decoded to %s", (const char*)soundFileDecoded.ToUTF8());
             }
