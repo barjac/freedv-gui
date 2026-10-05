@@ -47,7 +47,6 @@
 #include "freedv_interface.h"
 #include "audio/AudioEngineFactory.h"
 #include "pipeline/TxRxThread.h"
-#include "LevelerStep.h"
 #include "reporting/pskreporter.h"
 #include "reporting/FreeDVReporter.h"
 #include "reporting/CsvReporter.h"
@@ -127,6 +126,7 @@ float g_snr;
 std::atomic<bool>  g_half_duplex;
 std::atomic<bool>  g_voice_keyer_tx;
 std::atomic<bool>  g_agcEnabled;
+std::atomic<float> g_agcAppliedGainDb;
 std::atomic<bool>  g_bwExpandEnabled;
 
 // tx/rx processing states
@@ -1322,7 +1322,7 @@ MainFrame::MainFrame(wxWindow *parent) : TopFrame(parent, wxID_ANY, _("FreeDV ")
     // Add AGC/leveler gain window (2026-09-28) -- see defines.h's own
     // comment on the AGC_GAIN_PLOT_*/MIN_AGC_GAIN_PLOT_VAL/
     // MAX_AGC_GAIN_PLOT_VAL constants for the faster window/tighter Y
-    // range vs. SNR above. Fed from LevelerStep::getLiveAppliedGainDb()
+    // range vs. SNR above. Fed from LevelerLimiterStep::getLiveAppliedGainDb() (via g_agcAppliedGainDb)
     // in the ID_TIMER_LEVEL_METER_TX handler below, live during TX.
     m_panelAgcGain = new PlotScalar(m_auiNbookCtrl, AGC_GAIN_PLOT_SECONDS, LEVEL_METER_TX_REFRESH_PERIOD_SEC, MIN_AGC_GAIN_PLOT_VAL, MAX_AGC_GAIN_PLOT_VAL, AGC_GAIN_PLOT_SECONDS / AGC_GAIN_PLOT_SECOND_SEGMENTS, 3, "%.1f", 0, "", true, 0, false);
     m_auiNbookCtrl->AddPage(m_panelAgcGain, _("AGC dB"), false, wxNullBitmap);
@@ -2630,12 +2630,8 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
         m_gaugeLevel->SetZoneColours(true);
         m_gaugeLevel->SetLevelDb(m_maxLevelDbTx);
 
-        // AGC/leveler gain plot (2026-09-28) -- see its construction's own
-        // comment. Piggybacks on this same fast TX-only timer tick rather
-        // than a separate one, since Barry wants this live during TX
-        // specifically (unlike the SNR plot above, which is deliberately
-        // skipped during TX).
-        m_panelAgcGain->add_new_sample(LevelerStep::getLiveAppliedGainDb());
+        // AGC gain plot (evaluation aid, see AGC_GAIN_PLOT_* in defines.h).
+        m_panelAgcGain->add_new_sample(g_agcAppliedGainDb.load(std::memory_order_relaxed));
         m_panelAgcGain->refreshData();
     }
     else if (timerId == ID_TIMER_LEVEL_METER_TX)

@@ -86,7 +86,7 @@
 // plots live during TX alongside it -- not SNR's slower 100ms.
 // Y range widened to +/-12dB (2026-09-30, Barry: testing extreme low/high
 // input found the trace clipping against the original +/-9dB edges) --
-// matches LEVELER_GAIN_LIMIT_DB (LevelerStep.cpp, backend) exactly, so
+// matches LEVELER_GAIN_LIMIT_DB (LevelerLimiterStep.cpp, backend) exactly, so
 // the plot can now show the leveler's true full range instead of an
 // arbitrarily tighter one.
 // Narrowed from 15s to 10s (2026-10-01, Barry: "maybe the AGC dB plot was
