@@ -891,7 +891,7 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     // 13x8px segments -- width matches the old gauge's ~135px footprint
     // (10 segments), height close to the old amber/green/red target-marker
     // strip's 3px rather than the old gauge's own 15px.
-    m_gaugeLevel = new LevelMeterLed(levelBox, wxID_ANY, -LEVEL_GAUGE_MIN_DB, 0.0f, 3.0f, -9.0f, -3.0f, 13, 8);
+    m_gaugeLevel = new LevelMeterLed(levelBox, wxID_ANY, -LEVEL_GAUGE_MIN_DB, 0.0f, 3.0f, -9.0f, -3.0f, 13, 12);
     m_gaugeLevel->SetToolTip(_("Peak of From Radio in Rx, or peak of From Mic in Tx mode."));
     levelBox->GetContentSizer()->Add(m_gaugeLevel, 1, wxALIGN_CENTER_VERTICAL|static_cast<int>(wxALL), 10);
 

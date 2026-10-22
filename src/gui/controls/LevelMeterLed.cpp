@@ -93,18 +93,23 @@ void LevelMeterLed::OnPaint(wxPaintEvent&)
 {
     wxAutoBufferedPaintDC dc(this);
 
-    // Normally fully covered by segments; the clear only matters if the
-    // widget is ever given more space than DoGetBestSize().
-    dc.SetBackground(wxBrush(GroupBoxBackgroundColour()));
+    // Shows between the LEDs, and inside unlit ones.
+    wxColour background = GroupBoxBackgroundColour();
+    dc.SetBackground(wxBrush(background));
     dc.Clear();
 
     static const wxColour GREEN(0, 200, 0);
     static const wxColour AMBER(230, 160, 0);
     static const wxColour RED(220, 30, 30);
     static const wxColour BLUE(60, 145, 240);
-    static const wxColour UNLIT(128, 128, 128); // mid grey, visible on light and dark themes
 
-    dc.SetPen(*wxTRANSPARENT_PEN);
+    // Each LED is outlined in its own colour, so unlit LEDs (left empty)
+    // still show where they are and which zone they belong to.
+
+    // Each LED sits centred in its own segment, LED_GAP_PX narrower, so
+    // neighbouring LEDs are LED_GAP_PX apart.
+    constexpr int LED_GAP_PX = 2;
+    int ledWidth = std::max(1, segmentWidthPx_ - LED_GAP_PX);
 
     for (int i = 0; i < numSegments_; i++)
     {
@@ -112,9 +117,11 @@ void LevelMeterLed::OnPaint(wxPaintEvent&)
         wxColour zoneColour = !zoneColours_ ? BLUE :
             (lowerDb >= redStartDb_) ? RED : (lowerDb >= amberStartDb_) ? AMBER : GREEN;
 
-        wxColour fillColour = (i < litSegments_) ? zoneColour : UNLIT;
+        wxColour fillColour = (i < litSegments_) ? zoneColour : background;
 
         dc.SetBrush(wxBrush(fillColour));
-        dc.DrawRectangle(i * segmentWidthPx_, 0, segmentWidthPx_, segmentHeightPx_);
+        dc.SetPen(wxPen(zoneColour, 1));
+        dc.DrawRectangle(i * segmentWidthPx_ + LED_GAP_PX / 2, 0, ledWidth, segmentHeightPx_);
     }
+}
 }
