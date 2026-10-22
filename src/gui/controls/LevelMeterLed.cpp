@@ -124,4 +124,3 @@ void LevelMeterLed::OnPaint(wxPaintEvent&)
         dc.DrawRectangle(i * segmentWidthPx_ + LED_GAP_PX / 2, 0, ledWidth, segmentHeightPx_);
     }
 }
-}
