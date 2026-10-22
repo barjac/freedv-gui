@@ -1325,6 +1325,7 @@ MainFrame::MainFrame(wxWindow *parent) : TopFrame(parent, wxID_ANY, _("FreeDV ")
     // range vs. SNR above. Fed from LevelerLimiterStep::getLiveAppliedGainDb() (via g_agcAppliedGainDb)
     // in the ID_TIMER_LEVEL_METER_TX handler below, live during TX.
     m_panelAgcGain = new PlotScalar(m_auiNbookCtrl, AGC_GAIN_PLOT_SECONDS, LEVEL_METER_TX_REFRESH_PERIOD_SEC, MIN_AGC_GAIN_PLOT_VAL, MAX_AGC_GAIN_PLOT_VAL, AGC_GAIN_PLOT_SECONDS / AGC_GAIN_PLOT_SECOND_SEGMENTS, 3, "%.1f", 0, "", true, 0, false);
+    m_panelAgcGain->setLineWidth(2); // easier to see on the dark background
     m_auiNbookCtrl->AddPage(m_panelAgcGain, _("AGC dB"), false, wxNullBitmap);
 
     m_togBtnOnOff->Connect(wxEVT_UPDATE_UI, wxUpdateUIEventHandler(MainFrame::OnTogBtnOnOffUI), NULL, this);
