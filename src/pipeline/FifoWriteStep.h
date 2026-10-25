@@ -1,8 +1,9 @@
 //=========================================================================
 // Name:            FifoWriteStep.h
 // Purpose:         Copies the audio passing through into a FIFO, for a
-//                  display to read (e.g. the TX level meter). Use it inside
-//                  a TapStep so the copy is made off the audio path.
+//                  display to read (e.g. the TX level meter), and passes it
+//                  on unchanged. GenericFIFO is real-time safe, so it can
+//                  sit directly in the audio path.
 //
 // Authors:         Claude Code (for Barry Jackson, G4MKT)
 // License:
@@ -55,12 +56,12 @@ public:
     virtual int getInputSampleRate() const FREEDV_NONBLOCKING override { return sampleRate_; }
     virtual int getOutputSampleRate() const FREEDV_NONBLOCKING override { return sampleRate_; }
 
-    // Samples that don't fit (the display isn't reading) are dropped.
+    // Samples that don't fit (the display isn't reading) aren't copied.
     virtual short* execute(short* inputSamples, int numInputSamples, int* numOutputSamples) FREEDV_NONBLOCKING override
     {
         fifo_->write(inputSamples, numInputSamples);
-        *numOutputSamples = 0;
-        return nullptr;
+        *numOutputSamples = numInputSamples;
+        return inputSamples;
     }
 
 private:

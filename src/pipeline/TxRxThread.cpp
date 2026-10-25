@@ -190,7 +190,7 @@ void TxRxThread::initializePipeline_()
 
         // While a file plays in place of the mic (e.g. the voice keyer), the
         // TX level meter shows the file's own level, before any processing.
-        auto levelMeterVkTap = new TapStep(inputSampleRate_, new FifoWriteStep(inputSampleRate_, &g_levelMeterTxVkFifo));
+        auto levelMeterVkTap = new FifoWriteStep(inputSampleRate_, &g_levelMeterTxVkFifo);
         eitherOrPlayMicIn->appendPipelineStep(levelMeterVkTap);
         
         auto eitherOrPlayStep = new EitherOrStep(
