@@ -63,7 +63,7 @@ wxString MsgListPopup::GetStringValue() const
         return GetComboCtrl()->GetValue();
 
     int sel = GetSelection();
-    return sel != wxNOT_FOUND ? GetString(sel) : wxString();
+    return sel != wxNOT_FOUND ? GetString(sel) : m_combo->GetValue();
 }
 
 void MsgListPopup::OnPopup()
