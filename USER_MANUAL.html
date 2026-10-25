@@ -1413,6 +1413,12 @@ start, or was already stopped, is stopped again. (PR #1583)</li>
 <li>Windows: fix audio devices closing their timing handles while the
 audio processing thread could still be waiting on them, and undoing the
 1 ms timer resolution request twice. (PR #1583)</li>
+<li>Prevent duplicate contacts from being restored. (PR #1589)</li>
+<li>Disable Log QSO button if logging is disabled. (PR #1589)</li>
+<li>Keep a typed FreeDV Reporter status message when the saved list
+closes. (PR #1590)</li>
+<li>Stop the radio recording budget at zero instead of wrapping it. (PR
+#1592)</li>
 </ul></li>
 <li>Build system:
 <ul>
@@ -1442,6 +1448,8 @@ sound cards. (PR #1567)</li>
 <li>Various GUI performance improvements. (PR #1481, #1521, #1524,
 #1527, #1531)</li>
 <li>Windows audio thread timing improvements. (PR #1488)</li>
+<li>Log when the sound server puts a PulseAudio stream on another
+device. (PR #1591)</li>
 </ul></li>
 </ol>
 <h2 data-number="19.2" id="v2.4.0-august-2026"><span
