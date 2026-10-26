@@ -106,7 +106,7 @@ int                 g_freedv_verbose;
 int                 g_testFrames;
 int                 g_test_frame_sync_state;
 int                 g_test_frame_count;
-int                 g_resyncs;
+std::atomic<int>    g_resyncs;
 float               g_sig_pwr_av = 0.0;
 short              *g_error_hist, *g_error_histn;
 std::atomic<float>    g_tone_phase;
@@ -152,8 +152,8 @@ std::atomic<bool>  g_bwExpandEnabled;
 // tx/rx processing states
 std::atomic<int>                 g_State, g_prev_State;
 paCallBackData     *g_rxUserdata;
-int                 g_dump_timing;
-int                 g_dump_fifo_state;
+std::atomic<int>                 g_dump_timing;
+std::atomic<int>                 g_dump_fifo_state;
 time_t              g_sync_time;
 
 // FIFOs used for plotting waveforms
@@ -164,7 +164,7 @@ GenericFIFO<short>  g_plotSpeechInFifoBeforeEQ(PLOT_BUF_MULTIPLIER*WAVEFORM_PLOT
 GenericFIFO<short>  g_plotSpeechInFifoAfterAGC(PLOT_BUF_MULTIPLIER*WAVEFORM_PLOT_BUF);
 
 // Soundcard config
-int                 g_nSoundCards;
+std::atomic<int>         g_nSoundCards;
 
 // PortAudio over/underflow counters
 
@@ -179,8 +179,8 @@ std::atomic<int>    g_outfifo2_empty;
 // went hungry for real-time data.
 std::atomic<int>    g_infifo1_empty;
 std::atomic<int>    g_infifo2_empty;
-int                 g_AEstatus1[4];
-int                 g_AEstatus2[4];
+std::atomic<int>    g_AEstatus1[4];
+std::atomic<int>    g_AEstatus2[4];
 
 // playing and recording from sound files
 
@@ -346,6 +346,36 @@ static void LogLockFunction_(bool lock, void *)
     }
 }
 
+// wxWidgets' default log target collects log messages into a modal message
+// dialog, which blocks the main loop while it's open -- including at exit,
+// where a message queued while windows are being torn down can keep that
+// dialog (and thus the process) up forever. FreeDV surfaces log messages in
+// its own log instead, so send wxWidgets' log messages there as well.
+class UlogLogTarget : public wxLog
+{
+    void DoLogRecord(wxLogLevel level, const wxString& msg, const wxLogRecordInfo& /* info */) override
+    {
+        auto utf8 = msg.ToUTF8();
+        const char* text = utf8.data();
+        switch (level)
+        {
+            case wxLOG_Error:
+                log_error("%s", text);
+                break;
+            case wxLOG_Warning:
+                log_warn("%s", text);
+                break;
+            case wxLOG_Info:
+            case wxLOG_Message:
+                log_info("%s", text);
+                break;
+            default:
+                log_debug("%s", text);
+                break;
+        }
+    }
+};
+
 template<int soundCardId, bool isOut>
 void MainFrame::handleAudioDeviceChange_(std::string const& newDeviceName)
 {
@@ -423,7 +453,10 @@ void MainApp::UnitTest_()
     }
     std::this_thread::sleep_for(2s);
     
-    constexpr int MAX_TIME_AS_COUNTER = 60000; // 20 minutes
+    // The loops below wait against the clock rather than counting their
+    // sleeps: a sleep can last well past what's asked for (several times
+    // over on some CI machines), so counting them stretches the waits out.
+    constexpr auto MAX_TIME = 20min;
     if (testName == "tx")
     {
         if (utTxOutFile != "")
@@ -466,8 +499,8 @@ void MainApp::UnitTest_()
                     delete txEvent;
                 });
 
-                int counter = 0;
-                while (g_playFileToMicIn.load(std::memory_order_acquire) && (counter++) < MAX_TIME_AS_COUNTER)
+                auto giveUpAt = std::chrono::steady_clock::now() + MAX_TIME;
+                while (g_playFileToMicIn.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < giveUpAt)
                 {
                     std::this_thread::sleep_for(20ms);
                 } 
@@ -527,8 +560,8 @@ void MainApp::UnitTest_()
             recSf.channels   = 1;
             recSf.samplerate = RECORD_FILE_SAMPLE_RATE;
 
-            g_sfRecDecoderFile = sf_open((const char*)utRxOutFile.ToUTF8(), SFM_WRITE, &recSf);
-            g_recFileFromDecoder = true;
+            g_sfRecDecoderFile.store(sf_open((const char*)utRxOutFile.ToUTF8(), SFM_WRITE, &recSf), std::memory_order_release);
+            g_recFileFromDecoder.store(true, std::memory_order_release);
         }
 
         if (utRxFile != "")
@@ -542,8 +575,8 @@ void MainApp::UnitTest_()
             g_playFileFromRadio.store(true, std::memory_order_release);
 
             auto sync = 0;
-            int counter = 0;
-            while (g_playFileFromRadio.load(std::memory_order_acquire) && (counter++) < MAX_TIME_AS_COUNTER)
+            auto giveUpAt = std::chrono::steady_clock::now() + MAX_TIME;
+            while (g_playFileFromRadio.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < giveUpAt)
             {
                 std::this_thread::sleep_for(20ms);
                 auto newSync = freedvInterface.getSync();
@@ -558,7 +591,8 @@ void MainApp::UnitTest_()
         {
             // Receive for txtime seconds
             auto sync = 0;
-            for (int i = 0; i < utTxTimeSeconds*50; i++)
+            auto stopAt = std::chrono::steady_clock::now() + std::chrono::seconds(utTxTimeSeconds);
+            while (std::chrono::steady_clock::now() < stopAt)
             {
                 std::this_thread::sleep_for(20ms);
                 auto newSync = freedvInterface.getSync();
@@ -572,7 +606,7 @@ void MainApp::UnitTest_()
 
         if (g_recFileFromDecoder.load(std::memory_order_acquire))
         {
-            g_recFileFromDecoder = false;
+            g_recFileFromDecoder.store(false, std::memory_order_release);
             sf_close(g_sfRecDecoderFile.load(std::memory_order_acquire));
         }
     }
@@ -584,8 +618,8 @@ void MainApp::UnitTest_()
     // tear anything down -- these reflect the audio subsystem's own view of
     // whether our real-time threads got samples to it on time, as opposed to
     // our internal FIFO-empty counters which only see the symptom.
-    log_info("Audio1: inUnderflow: %d inOverflow: %d outUnderflow: %d outOverflow: %d", g_AEstatus1[0], g_AEstatus1[1], g_AEstatus1[2], g_AEstatus1[3]);
-    log_info("Audio2: inUnderflow: %d inOverflow: %d outUnderflow: %d outOverflow: %d", g_AEstatus2[0], g_AEstatus2[1], g_AEstatus2[2], g_AEstatus2[3]);
+    log_info("Audio1: inUnderflow: %d inOverflow: %d outUnderflow: %d outOverflow: %d", g_AEstatus1[0].load(std::memory_order_relaxed), g_AEstatus1[1].load(std::memory_order_relaxed), g_AEstatus1[2].load(std::memory_order_relaxed), g_AEstatus1[3].load(std::memory_order_relaxed));
+    log_info("Audio2: inUnderflow: %d inOverflow: %d outUnderflow: %d outOverflow: %d", g_AEstatus2[0].load(std::memory_order_relaxed), g_AEstatus2[1].load(std::memory_order_relaxed), g_AEstatus2[2].load(std::memory_order_relaxed), g_AEstatus2[3].load(std::memory_order_relaxed));
     log_info("Fifos: infull1: %d outempty1: %d infull2: %d outempty2: %d inempty1: %d inempty2: %d", g_infifo1_full.load(std::memory_order_relaxed), g_outfifo1_empty.load(std::memory_order_relaxed), g_infifo2_full.load(std::memory_order_relaxed), g_outfifo2_empty.load(std::memory_order_relaxed), g_infifo1_empty.load(std::memory_order_relaxed), g_infifo2_empty.load(std::memory_order_relaxed));
 
     // What the sound cards went through, for telling a failure that started
@@ -927,6 +961,10 @@ bool MainApp::OnInit()
     GTKSuppressDiagnostics();
 #endif // wxCHECK_VERSION(3,1,6) && defined(__WXGTK__)
 
+    // Route wxWidgets' own log messages (and any that GTK queues on its
+    // behalf) through ulog rather than wxLogGui's message dialogs.
+    wxLog::SetActiveTarget(new UlogLogTarget());
+
     // Initialize locale. Note that wxWidgets takes ownership of the wxTranslations
     // object, but clang-analyzer can't see that and reports a leak further down.
     // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks)
@@ -1221,7 +1259,7 @@ void MainFrame::loadConfiguration_()
     m_freqBox->Show(isFrequencyControlEnabled_());
 
     restoreCallsignListFromCsv_();
-    m_logQSO->Enable(m_lastReportedCallsignListView->GetItemCount() > 0);
+    m_logQSO->Enable(canLogQso_());
 
     // Show/hide callsign combo box based on reporting enablement
     if (wxGetApp().appConfiguration.reportingConfiguration.reportingEnabled)
@@ -1258,11 +1296,11 @@ void MainFrame::loadConfiguration_()
     bool hasSoundCard2InDevice = wxGetApp().appConfiguration.audioConfiguration.soundCard2In.deviceName != "none";
     bool hasSoundCard2OutDevice = wxGetApp().appConfiguration.audioConfiguration.soundCard2Out.deviceName != "none";
     
-    g_nSoundCards = 0;
+    g_nSoundCards.store(0, std::memory_order_release);
     if (hasSoundCard1InDevice && hasSoundCard1OutDevice) {
-        g_nSoundCards = 1;
+        g_nSoundCards.store(1, std::memory_order_release);
         if (hasSoundCard2InDevice && hasSoundCard2OutDevice)
-            g_nSoundCards = 2;
+            g_nSoundCards.store(2, std::memory_order_release);
     }
     
     // Update the reporting list as needed.
@@ -1394,6 +1432,7 @@ MainFrame::MainFrame(wxWindow *parent) : TopFrame(parent, wxID_ANY, wxT("FreeDV 
     
     m_reporterDialog = nullptr;
     m_filterDialog = nullptr;
+    optionsDlg = nullptr;
 
     // Initialize panel pointers to null before creation since "page changed" 
     // events fire as we're adding these (and we compare against these pointers
@@ -1551,8 +1590,8 @@ MainFrame::MainFrame(wxWindow *parent) : TopFrame(parent, wxID_ANY, wxT("FreeDV 
     g_playFileToMicIn.store(false, std::memory_order_release);
     g_loopPlayFileToMicIn.store(false, std::memory_order_relaxed);
 
-    g_sfRecFile = NULL;
-    g_recFileFromRadio = false;
+    g_sfRecFile.store(NULL, std::memory_order_release);
+    g_recFileFromRadio.store(false, std::memory_order_release);
 
     g_sfPlayFileFromRadio.store(NULL, std::memory_order_release);
     g_playFileFromRadio.store(false, std::memory_order_release);
@@ -1580,10 +1619,8 @@ MainFrame::MainFrame(wxWindow *parent) : TopFrame(parent, wxID_ANY, wxT("FreeDV 
 
     g_testFrames = 0;
     g_test_frame_sync_state = 0;
-    g_resyncs = 0;
+    g_resyncs.store(0, std::memory_order_relaxed);
     g_tone_phase.store(0.0f, std::memory_order_relaxed);
-
-    optionsDlg = new OptionsDlg(NULL);
 
     vk_state = VK_IDLE;
 
@@ -1640,7 +1677,8 @@ MainFrame::MainFrame(wxWindow *parent) : TopFrame(parent, wxID_ANY, wxT("FreeDV 
        to helpo debug 700D windows sound break up */
 
     wxGetApp().m_txRxThreadHighPriority = true;
-    g_dump_timing = g_dump_fifo_state = 0;
+    g_dump_timing.store(0, std::memory_order_relaxed);
+    g_dump_fifo_state.store(0, std::memory_order_relaxed);
 }
 
 void MainFrame::restoreCallsignListFromCsv_()
@@ -1696,6 +1734,18 @@ void MainFrame::restoreCallsignListFromCsv_()
         try { snrInt = std::stoi(snrStr); } catch (...) { continue; }
         wxString snrDisplay;
         snrDisplay.Printf(SNR_FORMAT_STR_NO_DB, (float)snrInt);
+
+        // The log gets a row for every time a callsign is decoded, but while
+        // on the air repeated decodes of the same station on the same
+        // frequency only update the SNR of the top row. Do the same here so
+        // the list looks the same after a restart.
+        if (m_lastReportedCallsignListView->GetItemCount() > 0 &&
+            m_lastReportedCallsignListView->GetItemText(0, 0) == wxString(callsign) &&
+            m_lastReportedCallsignListView->GetItemText(0, 1) == freqDisplay)
+        {
+            m_lastReportedCallsignListView->SetItem(0, 3, snrDisplay);
+            continue;
+        }
 
         auto index = m_lastReportedCallsignListView->InsertItem(0, wxString(callsign), 0);
         m_lastReportedCallsignListView->SetItem(index, 1, freqDisplay);
@@ -1770,6 +1820,14 @@ void MainFrame::exportConfiguration_(wxConfigBase* config)
 //-------------------------------------------------------------------------
 MainFrame::~MainFrame()
 {
+    // Close the frequency list now if it's open. Otherwise ~wxComboCtrlBase()
+    // closes it once this window is partly destroyed, and on macOS working out
+    // where the mouse is then asserts ("TopLevel Window missing").
+    if (m_cboReportFrequency->IsPopupShown())
+    {
+        m_cboReportFrequency->Dismiss();
+    }
+
     delete voiceKeyerPopupMenu_;
     
     if (m_filterDialog != nullptr)
@@ -1848,8 +1906,8 @@ MainFrame::~MainFrame()
     auto recFileFromModulator = g_sfRecFileFromModulator.load(std::memory_order_acquire);
     if (recFile != NULL)
     {
-        sf_close(recFile);
-        g_sfRecFile = NULL;
+        sf_close(g_sfRecFile.load(std::memory_order_acquire));
+        g_sfRecFile.store(NULL, std::memory_order_release);
     }
     if (recFileFromModulator != NULL && recFileFromModulator != recFile)
     {
@@ -2122,7 +2180,7 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
             {
                 if (g_prev_State.load(std::memory_order_acquire) == 0) 
                 {
-                    g_resyncs++;
+                    g_resyncs.fetch_add(1, std::memory_order_relaxed);
                 
                     // Auto-reset stats if we've gone long enough since losing sync.
                     // NOTE: m_timeSinceSyncLoss is in milliseconds.
@@ -2315,7 +2373,7 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
         bool micEqEnableOld = g_rxUserdata->micInEQEnable.load(std::memory_order_relaxed);
         bool spkrEqEnableOld = g_rxUserdata->spkOutEQEnable.load(std::memory_order_relaxed);
 
-        if (m_newMicInFilter || m_newSpkOutFilter ||
+        if (m_newMicInFilter.load(std::memory_order_relaxed) || m_newSpkOutFilter.load(std::memory_order_relaxed) ||
             micEqEnableOld != wxGetApp().appConfiguration.filterConfiguration.micInChannel.eqEnable ||
             spkrEqEnableOld != wxGetApp().appConfiguration.filterConfiguration.spkOutChannel.eqEnable) {
             
@@ -2324,9 +2382,9 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
             g_rxUserdata->micInEQEnable.store(wxGetApp().appConfiguration.filterConfiguration.micInChannel.eqEnable, std::memory_order_relaxed);
             g_rxUserdata->spkOutEQEnable.store(wxGetApp().appConfiguration.filterConfiguration.spkOutChannel.eqEnable, std::memory_order_relaxed);
 
-            if (m_newMicInFilter || m_newSpkOutFilter)
+            if (m_newMicInFilter.load(std::memory_order_relaxed) || m_newSpkOutFilter.load(std::memory_order_relaxed))
             {
-                if (g_nSoundCards == 1)
+                if (g_nSoundCards.load(std::memory_order_relaxed) == 1)
                 {
                     designEQFilters(g_rxUserdata, wxGetApp().appConfiguration.audioConfiguration.soundCard1Out.sampleRate, 0);
                 }
@@ -2336,7 +2394,8 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
                 }
             }
 
-            m_newMicInFilter = m_newSpkOutFilter = false;
+            m_newMicInFilter.store(false, std::memory_order_relaxed);
+            m_newSpkOutFilter.store(false, std::memory_order_relaxed);
         }
         g_mutexProtectingCallbackData.Unlock();
 
@@ -2381,7 +2440,10 @@ void MainFrame::OnTimer(wxTimerEvent &evt)
         m_textClockOffset->SetLabel(CLK_OFF_UNK_LABEL);
 
         /* FIFO and PortAudio under/overflow debug counters */
-        optionsDlg->DisplayFifoPACounters();
+        if (optionsDlg != nullptr)
+        {
+            optionsDlg->DisplayFifoPACounters();
+        }
 
     
         // Voice Keyer state machine
@@ -2678,14 +2740,18 @@ void MainFrame::performFreeDVOn_()
         
         if (soundCardSetupValid)
         {
-            wxGetApp().m_reporters.clear();
+            // The reporter list is used from the UI thread, so it's only
+            // changed there.
+            executeOnUiThreadAndWait_([&]() {
+                wxGetApp().m_reporters.clear();
+            });
             
             startRxStream();
 
             if (m_RxRunning.load(std::memory_order_acquire))
             {
                 // Enable Tune button if TX is valid.
-                if (g_nSoundCards > 1)
+                if (g_nSoundCards.load(std::memory_order_acquire) > 1)
                 {
                     executeOnUiThreadAndWait_([&]() {
                         m_btnTogTune->Enable(true);
@@ -2741,8 +2807,9 @@ void MainFrame::performFreeDVOn_()
                     }
                     else
                     {
+                        std::vector<std::shared_ptr<IReporter>> reporters;
                         auto csvPath = wxGetApp().appConfiguration.reportingConfiguration.csvLogFilePath.get();
-                        wxGetApp().m_reporters.push_back(std::make_shared<CsvReporter>(csvPath.ToStdString()));
+                        reporters.push_back(std::make_shared<CsvReporter>(csvPath.ToStdString()));
 
                         if (wxGetApp().appConfiguration.reportingConfiguration.pskReporterEnabled)
                         {
@@ -2752,17 +2819,7 @@ void MainFrame::performFreeDVOn_()
                                     wxGetApp().appConfiguration.reportingConfiguration.reportingGridSquare->ToStdString(),
                                     std::string("FreeDV ") + GetFreeDVVersion());
                             assert(pskReporter != nullptr);
-                            wxGetApp().m_reporters.push_back(pskReporter);
-                        }
-                        
-                        if (wxGetApp().appConfiguration.reportingConfiguration.freedvReporterEnabled)
-                        {
-                            wxGetApp().m_reporters.push_back(wxGetApp().m_sharedReporterObject);
-
-                            if (!m_reporterHidden->GetValue())
-                            {
-                                wxGetApp().m_sharedReporterObject->showOurselves();
-                            }
+                            reporters.push_back(pskReporter);
                         }
 
                         if (wxGetApp().appConfiguration.reportingConfiguration.udpBroadcastEnabled)
@@ -2770,35 +2827,46 @@ void MainFrame::performFreeDVOn_()
                             auto udpBroadcastReporter = std::make_shared<UdpReporter>(
                                 wxGetApp().appConfiguration.reportingConfiguration.udpBroadcastAddress->ToStdString(),
                                 wxGetApp().appConfiguration.reportingConfiguration.udpBroadcastPort);
-                            wxGetApp().m_reporters.push_back(udpBroadcastReporter);
+                            reporters.push_back(udpBroadcastReporter);
                         }
 
-                        // Enable FreeDV Reporter timer (every 5 minutes).
                         executeOnUiThreadAndWait_([&]() 
                         {
-                            m_pskReporterTimer.Start(5 * 60 * 1000);
-                        });
+                            wxGetApp().m_reporters = std::move(reporters);
 
-                        // Make sure QSY button becomes enabled after start.
-                        executeOnUiThreadAndWait_([&]() 
-                        {
+                            if (wxGetApp().appConfiguration.reportingConfiguration.freedvReporterEnabled)
+                            {
+                                wxGetApp().m_reporters.push_back(wxGetApp().m_sharedReporterObject);
+
+                                if (!m_reporterHidden->GetValue())
+                                {
+                                    wxGetApp().m_sharedReporterObject->showOurselves();
+                                }
+                            }
+
+                            // Enable FreeDV Reporter timer (every 5 minutes).
+                            m_pskReporterTimer.Start(5 * 60 * 1000);
+
+                            // Make sure QSY button becomes enabled after start.
                             if (m_reporterDialog != nullptr)
                             {
                                 m_reporterDialog->refreshQSYButtonState();
                             }
-                        });
                         
-                        // Immediately transmit selected TX mode and frequency to avoid UI glitches.
-                        for (auto& obj : wxGetApp().m_reporters)
-                        {
-                            obj->transmit(freedvInterface.getCurrentTxModeStr(), g_tx.load(std::memory_order_acquire));
-                            obj->freqChange(wxGetApp().appConfiguration.reportingConfiguration.reportingFrequency);
-                        }
+                            // Immediately transmit selected TX mode and frequency to avoid UI glitches.
+                            for (auto& obj : wxGetApp().m_reporters)
+                            {
+                                obj->transmit(freedvInterface.getCurrentTxModeStr(), g_tx.load(std::memory_order_acquire));
+                                obj->freqChange(wxGetApp().appConfiguration.reportingConfiguration.reportingFrequency);
+                            }
+                        });
                     }
                 }
                 else
                 {
-                    wxGetApp().m_reporters.clear();
+                    executeOnUiThreadAndWait_([&]() {
+                        wxGetApp().m_reporters.clear();
+                    });
                 }
 
                 if (wxGetApp().appConfiguration.rigControlConfiguration.useSerialPTTInput)
@@ -2927,18 +2995,22 @@ void MainFrame::performFreeDVOff_()
     
     stopRxStream();
          
-    wxGetApp().m_reporters.clear();
-    if (wxGetApp().m_sharedReporterObject)
+    executeOnUiThreadAndWait_([&]() 
     {
-        wxGetApp().m_sharedReporterObject->hideFromView();
-    }
+        wxGetApp().m_reporters.clear();
+        if (wxGetApp().m_sharedReporterObject)
+        {
+            wxGetApp().m_sharedReporterObject->hideFromView();
+        }
+    });
     
     // FreeDV clean up
     delete[] g_error_hist;
     delete[] g_error_histn;
     freedvInterface.stop();
     
-    m_newMicInFilter = m_newSpkOutFilter = true;
+    m_newMicInFilter.store(true, std::memory_order_release);
+    m_newSpkOutFilter.store(true, std::memory_order_release);
     
     wxGetApp().logger = nullptr;
 
@@ -2951,7 +3023,7 @@ void MainFrame::performFreeDVOff_()
         m_btnTogPTT->Disable();
         m_togBtnVoiceKeyer->Disable();
         
-        m_logQSO->Enable(m_lastReportedCallsignListView->GetItemCount() > 0);
+        m_logQSO->Enable(canLogQso_());
 
         // Make sure QSY button becomes disabled after stop.
         if (m_reporterDialog != nullptr)
@@ -2997,12 +3069,15 @@ void MainFrame::OnTogBtnOnOff(wxCommandEvent&)
                 bool txEnabled = 
                     m_RxRunning.load(std::memory_order_acquire) && 
                     !wxGetApp().appConfiguration.reportingConfiguration.freedvReporterForceReceiveOnly &&
-                    (g_nSoundCards == 2);
+                    (g_nSoundCards.load(std::memory_order_acquire) == 2);
                 
                 m_togBtnAnalog->Enable(m_RxRunning.load(std::memory_order_acquire));
                 m_togBtnVoiceKeyer->Enable(txEnabled);
                 m_btnTogPTT->Enable(txEnabled);
-                optionsDlg->setSessionActive(m_RxRunning.load(std::memory_order_acquire));
+                if (optionsDlg != nullptr)
+                {
+                    optionsDlg->setSessionActive(m_RxRunning.load(std::memory_order_acquire));
+                }
 
                 if (m_RxRunning.load(std::memory_order_acquire))
                 {
@@ -3053,7 +3128,10 @@ void MainFrame::OnTogBtnOnOff(wxCommandEvent&)
                 m_togBtnAnalog->Enable(m_RxRunning.load(std::memory_order_acquire));
                 m_togBtnVoiceKeyer->Enable(m_RxRunning.load(std::memory_order_acquire));
                 m_btnTogPTT->Enable(m_RxRunning.load(std::memory_order_acquire));
-                optionsDlg->setSessionActive(m_RxRunning.load(std::memory_order_acquire));
+                if (optionsDlg != nullptr)
+                {
+                    optionsDlg->setSessionActive(m_RxRunning.load(std::memory_order_acquire));
+                }
                 m_togBtnOnOff->SetValue(m_RxRunning.load(std::memory_order_acquire));
                 m_togBtnOnOff->SetLabel(_("&Start Modem"));
                 m_togBtnOnOff->Enable(true);
@@ -3123,8 +3201,8 @@ void MainFrame::stopRxStream()
         destroy_fifos();
         
         // Free memory allocated for filters.
-        m_newMicInFilter = true;
-        m_newSpkOutFilter = true;
+        m_newMicInFilter.store(true, std::memory_order_relaxed);
+        m_newSpkOutFilter.store(true, std::memory_order_relaxed);
         deleteEQFilters(g_rxUserdata);
         delete g_rxUserdata;
         
@@ -3226,7 +3304,7 @@ void MainFrame::startRxStream()
             3 * (freedvInterface.getTxNNomModemSamples() * wxGetApp().appConfiguration.audioConfiguration.soundCard1Out.sampleRate) / freedvInterface.getTxModemSampleRate(),
             m_fifoSize_ms*wxGetApp().appConfiguration.audioConfiguration.soundCard1Out.sampleRate / 1000);
 
-        if (g_nSoundCards == 2)
+        if (g_nSoundCards.load(std::memory_order_acquire) == 2)
         {
             int soundCard2InFifoSizeSamples = MAX_INCOMING_AUDIO_SEC * wxGetApp().appConfiguration.audioConfiguration.soundCard2In.sampleRate;
 
@@ -3265,7 +3343,7 @@ void MainFrame::startRxStream()
         log_debug("fifoSize_ms: %d infifo1: %d/outfilo1 %d",
                 wxGetApp().appConfiguration.fifoSizeMs.get(), soundCard1InFifoSizeSamples, soundCard1OutFifoSizeSamples);
 
-        if (g_nSoundCards == 0) 
+        if (g_nSoundCards.load(std::memory_order_acquire) == 0) 
         {
             executeOnUiThreadAndWait_([&]() {
                 wxMessageBox(_("No Sound Cards configured, use Tools->Settings to configure"), _("Error"), wxOK);
@@ -3278,7 +3356,7 @@ void MainFrame::startRxStream()
             delete g_rxUserdata;
             return;
         }
-        else if (g_nSoundCards == 1)
+        else if (g_nSoundCards.load(std::memory_order_acquire) == 1)
         {
             // RX-only setup.
             // Note: we assume 2 channels, but IAudioEngine will automatically downgrade to 1 channel if needed.
@@ -3372,12 +3450,12 @@ void MainFrame::startRxStream()
         
                 txInSoundDevice->setOnAudioOverflow([](IAudioDevice&, void*)
                 {
-                    g_AEstatus2[1]++;
+                    g_AEstatus2[1].fetch_add(1, std::memory_order_relaxed);
                 }, nullptr);
         
                 txInSoundDevice->setOnAudioUnderflow([](IAudioDevice&, void*)
                 {
-                    g_AEstatus2[0]++;
+                    g_AEstatus2[0].fetch_add(1, std::memory_order_relaxed);
                 }, nullptr);
                 
                 txInSoundDevice->setOnAudioError(errorCallback, this);                
@@ -3404,12 +3482,12 @@ void MainFrame::startRxStream()
         
                 txOutSoundDevice->setOnAudioOverflow([](IAudioDevice&, void*)
                 {
-                    g_AEstatus1[3]++;
+                    g_AEstatus1[3].fetch_add(1, std::memory_order_relaxed);
                 }, nullptr);
         
                 txOutSoundDevice->setOnAudioUnderflow([](IAudioDevice&, void*)
                 {
-                    g_AEstatus1[2]++;
+                    g_AEstatus1[2].fetch_add(1, std::memory_order_relaxed);
                 }, nullptr);
             
                 txOutSoundDevice->setOnAudioError(errorCallback, this);
@@ -3505,7 +3583,8 @@ void MainFrame::startRxStream()
         g_infifo1_empty.store(0, std::memory_order_relaxed);
         g_infifo2_empty.store(0, std::memory_order_relaxed);
         for (int i=0; i<4; i++) {
-            g_AEstatus1[i] = g_AEstatus2[i] = 0;
+            g_AEstatus1[i].store(0, std::memory_order_relaxed);
+            g_AEstatus2[i].store(0, std::memory_order_relaxed);
         }
 
         // These FIFOs interface between the 20ms tx/rxProcessing()
@@ -3566,12 +3645,12 @@ void MainFrame::startRxStream()
         
         rxInSoundDevice->setOnAudioOverflow([](IAudioDevice&, void*)
         {
-            g_AEstatus1[1]++;
+            g_AEstatus1[1].fetch_add(1, std::memory_order_relaxed);
         }, nullptr);
         
         rxInSoundDevice->setOnAudioUnderflow([](IAudioDevice&, void*)
         {
-            g_AEstatus1[0]++;
+            g_AEstatus1[0].fetch_add(1, std::memory_order_relaxed);
         }, nullptr);
         
         rxInSoundDevice->setOnAudioError(errorCallback, this);
@@ -3583,12 +3662,12 @@ void MainFrame::startRxStream()
             
             rxOutSoundDevice->setOnAudioOverflow([](IAudioDevice&, void*)
             {
-                g_AEstatus2[3]++;
+                g_AEstatus2[3].fetch_add(1, std::memory_order_relaxed);
             }, nullptr);
         
             rxOutSoundDevice->setOnAudioUnderflow([](IAudioDevice&, void*)
             {
-                g_AEstatus2[2]++;
+                g_AEstatus2[2].fetch_add(1, std::memory_order_relaxed);
             }, nullptr);
         }
         else
@@ -3624,12 +3703,12 @@ void MainFrame::startRxStream()
             
             rxOutSoundDevice->setOnAudioOverflow([](IAudioDevice&, void*)
             {
-                g_AEstatus1[3]++;
+                g_AEstatus1[3].fetch_add(1, std::memory_order_relaxed);
             }, nullptr);
         
             rxOutSoundDevice->setOnAudioUnderflow([](IAudioDevice&, void*)
             {
-                g_AEstatus1[2]++;
+                g_AEstatus1[2].fetch_add(1, std::memory_order_relaxed);
             }, nullptr);
         }
         
@@ -3770,11 +3849,11 @@ bool MainFrame::validateSoundCardSetup(bool silent)
     bool hasSoundCard2InDevice = wxGetApp().appConfiguration.audioConfiguration.soundCard2In.deviceName != "none";
     bool hasSoundCard2OutDevice = wxGetApp().appConfiguration.audioConfiguration.soundCard2Out.deviceName != "none";
     
-    g_nSoundCards = 0;
+    g_nSoundCards.store(0, std::memory_order_release);
     if (hasSoundCard1InDevice && hasSoundCard1OutDevice) {
-        g_nSoundCards = 1;
+        g_nSoundCards.store(1, std::memory_order_release);
         if (hasSoundCard2InDevice && hasSoundCard2OutDevice)
-            g_nSoundCards = 2;
+            g_nSoundCards.store(2, std::memory_order_release);
     }
     
     // For the purposes of validation, number of channels isn't necessary.
@@ -3805,7 +3884,7 @@ bool MainFrame::validateSoundCardSetup(bool silent)
         canRun = false;
     }
     
-    if (canRun && g_nSoundCards == 0)
+    if (canRun && g_nSoundCards.load(std::memory_order_acquire) == 0)
     {
         if (!silent)
         {
@@ -3832,7 +3911,7 @@ bool MainFrame::validateSoundCardSetup(bool silent)
         const int MIN_SAMPLE_RATE_RADIO = 8000;
         int failedSampleRate = 0;
         int expectedSampleRate = 0;
-        int expectedSampleRate1Out = (g_nSoundCards == 1 ? MIN_SAMPLE_RATE_ANALOG : MIN_SAMPLE_RATE_RADIO);
+        int expectedSampleRate1Out = (g_nSoundCards.load(std::memory_order_acquire) == 1 ? MIN_SAMPLE_RATE_ANALOG : MIN_SAMPLE_RATE_RADIO);
         
         // Validate sample rates
         if (wxGetApp().appConfiguration.audioConfiguration.soundCard1In.deviceName != "none" && wxGetApp().appConfiguration.audioConfiguration.soundCard1In.sampleRate < MIN_SAMPLE_RATE_RADIO)

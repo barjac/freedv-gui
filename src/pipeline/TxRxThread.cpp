@@ -85,10 +85,10 @@ extern paCallBackData* g_rxUserdata;
 extern std::atomic<int> g_infifo1_empty;
 extern std::atomic<int> g_infifo2_empty;
 extern std::atomic<int> g_analog;
-extern int g_nSoundCards;
+extern std::atomic<int> g_nSoundCards;
 extern std::atomic<bool> g_half_duplex;
 extern std::atomic<bool> g_tx;
-extern int g_dump_fifo_state;
+extern std::atomic<int> g_dump_fifo_state;
 extern std::atomic<bool> endingTx;
 extern std::atomic<bool> g_playFileToMicIn;
 extern std::atomic<int> g_sfTxFs;
@@ -101,8 +101,8 @@ extern GenericFIFO<short> g_plotDemodInFifo;
 extern GenericFIFO<short> g_plotSpeechOutFifo;
 extern int g_txLevel;
 extern std::atomic<float> g_txLevelScale;
-extern int g_dump_timing;
-extern int g_resyncs;
+extern std::atomic<int> g_dump_timing;
+extern std::atomic<int> g_resyncs;
 extern std::atomic<bool> g_recFileFromRadio;
 extern std::atomic<unsigned int> g_recFromRadioSamples;
 extern std::atomic<SNDFILE*> g_sfRecFile;
@@ -323,8 +323,16 @@ void TxRxThread::initializePipeline_()
             RECORD_FILE_SAMPLE_RATE, 
             []() { return g_sfRecFile.load(std::memory_order_acquire); }, 
             [this](int numSamples) {
-                g_recFromRadioSamples.fetch_sub(numSamples, std::memory_order_relaxed);
-                if (g_recFromRadioSamples.load(std::memory_order_relaxed) <= 0)
+                // The budget is unsigned, so stop it at zero rather than letting a write
+                // that runs past the end wrap it around. Report the end only once.
+                unsigned int left = g_recFromRadioSamples.load(std::memory_order_relaxed);
+                unsigned int newLeft;
+                do
+                {
+                    newLeft = left > (unsigned int)numSamples ? left - numSamples : 0;
+                } while (!g_recFromRadioSamples.compare_exchange_weak(left, newLeft, std::memory_order_relaxed));
+
+                if (left > 0 && newLeft == 0)
                 {
                     // call stop record menu item, should be thread safe
                     uiHooks_.recFileFromRadioFinished();
@@ -671,7 +679,7 @@ void TxRxThread::runOnce_(IRealtimeHelper* helper) FREEDV_NONBLOCKING
     auto outFifo = cbData->outfifo1;
     if (!m_tx)
     {
-        outFifo = (g_nSoundCards == 1) ? cbData->outfifo1 : cbData->outfifo2;
+        outFifo = (g_nSoundCards.load(std::memory_order_acquire) == 1) ? cbData->outfifo1 : cbData->outfifo2;
     }
     auto totalFifoCapacity = outFifo->capacity();
     auto fifoUsed = outFifo->numUsed();
@@ -792,7 +800,7 @@ void TxRxThread::clearFifos_() FREEDV_NONBLOCKING
     {
         cbData->infifo1->reset();
 
-        auto outFifo = (g_nSoundCards == 1) ? cbData->outfifo1 : cbData->outfifo2;
+        auto outFifo = (g_nSoundCards.load(std::memory_order_acquire) == 1) ? cbData->outfifo1 : cbData->outfifo2;
         outFifo->reset();
     }
 }
@@ -815,7 +823,7 @@ void TxRxThread::txProcessing_(IRealtimeHelper* helper) FREEDV_NONBLOCKING
     //
 
     bool tmpHalfDuplex = g_half_duplex.load(std::memory_order_acquire);
-    if (((g_nSoundCards == 2) && ((tmpHalfDuplex && g_tx.load(std::memory_order_acquire)) || !tmpHalfDuplex || g_voice_keyer_tx.load(std::memory_order_acquire) || g_recVoiceKeyerFile.load(std::memory_order_relaxed) || g_recFileFromMic.load(std::memory_order_relaxed)))) {        
+    if (((g_nSoundCards.load(std::memory_order_acquire) == 2) && ((tmpHalfDuplex && g_tx.load(std::memory_order_acquire)) || !tmpHalfDuplex || g_voice_keyer_tx.load(std::memory_order_acquire) || g_recVoiceKeyerFile.load(std::memory_order_relaxed) || g_recFileFromMic.load(std::memory_order_relaxed)))) {        
         if (deferReset_)
         {
             // We just entered TX from RX.
@@ -842,7 +850,7 @@ void TxRxThread::txProcessing_(IRealtimeHelper* helper) FREEDV_NONBLOCKING
 
         unsigned int nsam_one_modem_frame = (freedvInterface.getTxNNomModemSamples() * outputSampleRate_) / freedvInterface.getTxModemSampleRate();
 
-        if (g_dump_fifo_state) {
+        if (g_dump_fifo_state.load(std::memory_order_relaxed)) {
              // If this drops to zero we have a problem as we will run out of output samples
              // to send to the sound driver
              FREEDV_BEGIN_VERIFIED_SAFE
@@ -961,7 +969,7 @@ void TxRxThread::txProcessing_(IRealtimeHelper* helper) FREEDV_NONBLOCKING
 
             auto outputSamples = pipeline_->execute(inputPtr, nsam_in_48, &nout);
             
-            if (g_dump_fifo_state) {
+            if (g_dump_fifo_state.load(std::memory_order_relaxed)) {
                 FREEDV_BEGIN_VERIFIED_SAFE
                 log_info("  nout: %d", nout);
                 FREEDV_END_VERIFIED_SAFE
@@ -1024,7 +1032,7 @@ void TxRxThread::rxProcessing_(IRealtimeHelper* helper) FREEDV_NONBLOCKING
     int             nout;
 
     int nsam_one_speech_frame = (freedvInterface.getRxNumSpeechSamples() * outputSampleRate_) / freedvInterface.getRxSpeechSampleRate();
-    auto outFifo = (g_nSoundCards == 1) ? cbData->outfifo1 : cbData->outfifo2;
+    auto outFifo = (g_nSoundCards.load(std::memory_order_acquire) == 1) ? cbData->outfifo1 : cbData->outfifo2;
 
     // Tracks whether this wake cycle managed to read *any* new receive
     // samples at all. Running dry after successfully draining what was

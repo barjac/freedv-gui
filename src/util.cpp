@@ -78,7 +78,7 @@ bool MainApp::CanAccessSerialPort(std::string const& portName)
             return couldOpen;
         }
         
-		if((com_handle=open(portName.c_str(), O_NONBLOCK|O_RDWR))== COM_HANDLE_INVALID)
+		if((com_handle=open(portName.c_str(), O_NONBLOCK|O_RDWR|O_NOCTTY))== COM_HANDLE_INVALID)
         {
             couldOpen = false;
         }
@@ -120,7 +120,7 @@ bool MainFrame::isReceiveOnly()
 {
     return 
         wxGetApp().appConfiguration.reportingConfiguration.freedvReporterForceReceiveOnly || 
-        g_nSoundCards <= 1;
+        g_nSoundCards.load(std::memory_order_acquire) <= 1;
 }
 
 //----------------------------------------------------------------

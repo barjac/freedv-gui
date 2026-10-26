@@ -205,6 +205,8 @@ void PulseAudioDevice::stopImpl_()
 
 int64_t PulseAudioDevice::getLatencyInMicroseconds()
 {
+    // stopImpl_() destroys mainloop_ while holding objLock_.
+    std::unique_lock<std::mutex> lk(objLock_);
     if (mainloop_ == nullptr)
     {
         return 0;
@@ -491,6 +493,20 @@ void PulseAudioDevice::StreamStateCallback_(pa_stream *p, void *userdata)
     if (state == PA_STREAM_TERMINATED)
     {
         pa_threaded_mainloop_signal(thisObj->mainloop_, 0);
+    }
+    else if (state == PA_STREAM_READY)
+    {
+        // Streams aren't connected with PA_STREAM_DONT_MOVE, so that they
+        // can be moved to another device later. That also lets the sound
+        // server put one somewhere other than where it was asked to if that
+        // isn't there (PipeWire plays to the default device, for instance).
+        // Note it in the log when that happens.
+        const char* actualName = pa_stream_get_device_name(p);
+        if (actualName != nullptr && !thisObj->devName_.IsEmpty() &&
+            thisObj->devName_ != wxString::FromUTF8(actualName))
+        {
+            log_info("Stream for %s was connected to %s instead", (const char*)thisObj->devName_.ToUTF8(), actualName);
+        }
     }
     else if (state == PA_STREAM_FAILED)
     {

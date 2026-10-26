@@ -55,6 +55,33 @@ namespace {
             GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryTimerResolution"));
         return fn;
     }
+
+    // PKEY_Devices_AudioDevice_RawProcessingSupported from propkey.h, defined
+    // locally since not every toolchain's headers provide it.
+    const PROPERTYKEY PKEY_RawProcessingSupported_ = {
+        { 0x8943b373, 0x388c, 0x4395, { 0xb5, 0x57, 0xbc, 0x6d, 0xba, 0xff, 0xaf, 0xdb } }, 2
+    };
+
+    // Requesting AUDCLNT_STREAMOPTIONS_RAW on an endpoint that doesn't support
+    // raw mode can make IAudioClient::Initialize() fail with E_INVALIDARG, so
+    // only request it when the device says it's supported.
+    bool IsRawModeSupported_(ComPtr<IMMDevice> device)
+    {
+        ComPtr<IPropertyStore> propStore = nullptr;
+        HRESULT hr = device->OpenPropertyStore(STGM_READ, propStore.GetAddressOf());
+        if (FAILED(hr))
+        {
+            log_warn("Could not open device property store to check for raw mode support (hr = %ld)", hr);
+            return false;
+        }
+
+        PROPVARIANT value;
+        PropVariantInit(&value);
+        hr = propStore->GetValue(PKEY_RawProcessingSupported_, &value);
+        bool supported = SUCCEEDED(hr) && value.vt == VT_BOOL && value.boolVal == VARIANT_TRUE;
+        PropVariantClear(&value);
+        return supported;
+    }
 }
 
 thread_local HANDLE WASAPIAudioDevice::HelperTask_ = nullptr;
@@ -75,6 +102,7 @@ WASAPIAudioDevice::WASAPIAudioDevice(ComPtr<IAudioClient3> client, ComPtr<IMMDev
     , isRenderCaptureRunning_(false)
     , semaphore_(nullptr)
     , highResTimer_(nullptr)
+    , timePeriodSet_(false)
     , tmpBuf_(nullptr)
     , waitOvershootHns_(0)
 {
@@ -94,6 +122,19 @@ WASAPIAudioDevice::~WASAPIAudioDevice()
         captureClient_ = nullptr;
         client_ = nullptr;
         device_ = nullptr;
+
+        if (semaphore_ != nullptr)
+        {
+            CloseHandle(semaphore_);
+            semaphore_ = nullptr;
+        }
+
+        if (highResTimer_ != nullptr)
+        {
+            CloseHandle(highResTimer_);
+            highResTimer_ = nullptr;
+        }
+
         prom->set_value();
     });
     fut.wait(); 
@@ -125,7 +166,15 @@ void WASAPIAudioDevice::start()
         prop.cbSize = sizeof(AudioClientProperties);
         prop.bIsOffload = FALSE;
         prop.eCategory = AudioCategory_Other;
-        prop.Options = AUDCLNT_STREAMOPTIONS_RAW;
+        if (IsRawModeSupported_(device_))
+        {
+            prop.Options = AUDCLNT_STREAMOPTIONS_RAW;
+        }
+        else
+        {
+            log_info("Device does not support raw mode, using default audio processing");
+            prop.Options = AUDCLNT_STREAMOPTIONS_NONE;
+        }
         HRESULT hr = client_->SetClientProperties(&prop);
         if (FAILED(hr))
         {
@@ -405,8 +454,15 @@ void WASAPIAudioDevice::start()
             }
         }
 
-        // Create semaphore
-        semaphore_ = CreateSemaphore(nullptr, 0, 1, nullptr);
+        // Create semaphore, or clear the wakeup left in it by a previous stop().
+        if (semaphore_ != nullptr)
+        {
+            WaitForSingleObject(semaphore_, 0);
+        }
+        else
+        {
+            semaphore_ = CreateSemaphore(nullptr, 0, 1, nullptr);
+        }
         if (semaphore_ == nullptr)
         {
             std::stringstream ss;
@@ -419,7 +475,10 @@ void WASAPIAudioDevice::start()
         // WaitForSingleObject's millisecond-granular timeout. The high-res
         // flag requires Windows 10 1803+; fall back to a regular (still
         // usable, just lower-resolution) waitable timer if unavailable.
-        highResTimer_ = CreateWaitableTimerEx(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        if (highResTimer_ == nullptr)
+        {
+            highResTimer_ = CreateWaitableTimerEx(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        }
         if (highResTimer_ == nullptr)
         {
             highResTimer_ = CreateWaitableTimerEx(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
@@ -433,7 +492,11 @@ void WASAPIAudioDevice::start()
 
         // Reduce Windows timer resolution to 1ms to improve WaitForSingleObject
         // precision in the audio loop.
-        timeBeginPeriod(1);
+        if (!timePeriodSet_)
+        {
+            timeBeginPeriod(1);
+            timePeriodSet_ = true;
+        }
 
         // Start render/capture
         hr = client_->Start();
@@ -557,7 +620,12 @@ void WASAPIAudioDevice::stop()
         renderClient_ = nullptr;
         captureClient_ = nullptr;
 
-        timeEndPeriod(1);
+        // stop() also runs from the destructor, so only undo start()'s once.
+        if (timePeriodSet_)
+        {
+            timeEndPeriod(1);
+            timePeriodSet_ = false;
+        }
 
         if (renderCaptureEvent_ != nullptr)
         {
@@ -565,28 +633,19 @@ void WASAPIAudioDevice::stop()
             renderCaptureEvent_ = nullptr;
         }
         
+        // Wake anyone still waiting in stopRealTimeWork(). The handles stay
+        // open until the destructor: closing them here could pull them out
+        // from under a waiter (and the handle values could be reused).
         if (semaphore_ != nullptr)
         {
-            // Set semaphore_ to nullptr first in case someone could be potentially
-            // using it. Then for those currently waiting, release the semaphore 
-            // to get them unstuck. THEN we can close it. Otherwise, heap corruption
-            // occurs!
-            auto tmpSem = semaphore_;
-            semaphore_ = nullptr;
-            ReleaseSemaphore(tmpSem, 1, nullptr);
-            CloseHandle(tmpSem);
+            ReleaseSemaphore(semaphore_, 1, nullptr);
         }
 
         if (highResTimer_ != nullptr)
         {
-            // Same ordering rationale as semaphore_ above: null out, signal
-            // any waiter unstuck, then close.
-            auto tmpTimer = highResTimer_;
-            highResTimer_ = nullptr;
             LARGE_INTEGER dueTime;
             dueTime.QuadPart = 0;
-            SetWaitableTimer(tmpTimer, &dueTime, 0, nullptr, nullptr, FALSE);
-            CloseHandle(tmpTimer);
+            SetWaitableTimer(highResTimer_, &dueTime, 0, nullptr, nullptr, FALSE);
         }
 
         if (tmpBuf_ != nullptr)

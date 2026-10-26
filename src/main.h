@@ -130,7 +130,7 @@ enum {
 #define EXCHANGE_DATA_IN    0
 #define EXCHANGE_DATA_OUT   1
 
-extern int                 g_nSoundCards;
+extern std::atomic<int>      g_nSoundCards;
 
 // Last-used configuration file helpers.
 // The path is stored in a platform-appropriate state store
@@ -502,6 +502,9 @@ class MainFrame : public TopFrame
         
         void OnReportFrequencySetFocus(wxFocusEvent& event) override;
         void OnReportFrequencyKillFocus(wxFocusEvent& event) override;
+        void OnReportFrequencyContextMenu(wxContextMenuEvent& event) override;
+        void OnReportFrequencyItemMenu(int item) override;
+        void OnReportFrequencyItemDelete(int item) override;
 
         void OnSystemColorChanged(wxSysColourChangedEvent& event) override;
         
@@ -584,8 +587,8 @@ class MainFrame : public TopFrame
 
         // flags to indicate when new EQ filters need to be designed
 
-        bool        m_newMicInFilter;
-        bool        m_newSpkOutFilter;
+        std::atomic<bool> m_newMicInFilter;
+        std::atomic<bool> m_newSpkOutFilter;
 
         void        designEQFilters(paCallBackData *cb, int rxSampleRate, int txSampleRate);
         void        deleteEQFilters(paCallBackData *cb);
@@ -654,6 +657,8 @@ class MainFrame : public TopFrame
         void executeOnUiThreadAndWait_(std::function<void()> fn);
         
         void updateReportingFreqList_();
+        wxString reportFrequencyListString_(wxString const& text);
+        void addReportFrequencyToList_(wxString const& freq);
         
         void initializeFreeDVReporter_();
         void updateVoiceKeyerButtonLabel_();
@@ -703,6 +708,15 @@ class MainFrame : public TopFrame
 #else
             return true;
 #endif // 0
+        }
+        
+        // A contact can only be logged by sending it to a
+        // logging program over UDP, so only allow Log QSO if that's enabled.
+        bool canLogQso_()
+        {
+            return
+                wxGetApp().appConfiguration.reportingConfiguration.udpReportingEnabled &&
+                m_lastReportedCallsignListView->GetItemCount() > 0;
         }
         
         int getIdealStationsHeardColumnLength_(int col);
