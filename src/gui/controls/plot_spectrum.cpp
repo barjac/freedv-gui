@@ -23,8 +23,8 @@
 #include <string.h>
 #include <wx/wx.h>
 
+#include "defines.h"
 #include "plot_spectrum.h"
-#include "defines.h" // for FDMDV_FCENTRE
 
 #define HZ_GRANULARITY 10
 
@@ -59,9 +59,7 @@ END_EVENT_TABLE()
 PlotSpectrum::PlotSpectrum(wxWindow* parent, float *magdB, int n_magdB, 
                            float min_mag_db, float max_mag_db, bool clickTune): PlotPanel(parent)
 {
-    // XXX - FreeDV only supports English but makes a best effort to at least use regional formatting
-    // for e.g. numbers. Thus, we only need to override layout direction.
-    SetLayoutDirection(wxLayout_LeftToRight);
+    WXWIDGETS_SET_LAYOUT_DIRECTION;
     
     m_greyscale     = 0;
     m_Bufsz         = GetMaxClientSize();
@@ -172,7 +170,6 @@ void PlotSpectrum::draw(wxGraphicsContext* ctx, bool repaintDataOnly)
 
     auto freq_hz_to_px = (float)m_rGrid.GetWidth()/(MAX_F_HZ-MIN_F_HZ);
 
-    ctx->BeginLayer(1.0);
     wxGraphicsPath path = ctx->CreatePath();
     for(index = 0; index < m_n_magdB; index++)
     {
@@ -205,30 +202,32 @@ void PlotSpectrum::draw(wxGraphicsContext* ctx, bool repaintDataOnly)
         x += PLOT_BORDER + leftOffset_;
         y += PLOT_BORDER + bottomOffset_;
 
+        // Measure the spacing from the last point drawn rather than the previous bin: bins
+        // can be closer together than HZ_GRANULARITY, and then on a wide enough plot no
+        // bin was ever far enough from the one before it and the trace disappeared.
         if (index && (int)abs(x - prev_x) >= (int)(HZ_GRANULARITY*freq_hz_to_px))
         {
             path.AddLineToPoint(x, y);
+            prev_x = x;
         }
         if (!index)
         {
             path.MoveToPoint(x, y);
+            prev_x = x;
         }
-        prev_x = x;
     }
     ctx->StrokePath(path);
-    ctx->EndLayer();
 
     // and finally draw Graticule
     drawGraticuleFast(ctx, repaintDataOnly);
 }
 
 //-------------------------------------------------------------------------
-// drawGraticuleFast()
+// drawGraticuleLines_()
 //-------------------------------------------------------------------------
-void PlotSpectrum::drawGraticuleFast(wxGraphicsContext* ctx, bool repaintDataOnly)
+void PlotSpectrum::drawGraticuleLines_(wxGraphicsContext* ctx)
 {
-    int      x, y, text_w, text_h;
-    char     buf[STR_LENGTH];
+    int      x, y;
     float    f, mag, freq_hz_to_px, mag_dB_to_py;
 
     wxBrush ltGraphBkgBrush;
@@ -236,13 +235,6 @@ void PlotSpectrum::drawGraticuleFast(wxGraphicsContext* ctx, bool repaintDataOnl
     ltGraphBkgBrush.SetStyle(wxBRUSHSTYLE_TRANSPARENT);
     ltGraphBkgBrush.SetColour(foregroundColor);
     ctx->SetBrush(ltGraphBkgBrush);
-    ctx->SetPen(wxPen(foregroundColor, 1));
-    
-    if (!repaintDataOnly)
-    { 
-        wxGraphicsFont tmpFont = ctx->CreateFont(GetFont(), GetForegroundColour());
-        ctx->SetFont(tmpFont);
-    }
 
     freq_hz_to_px = (float)m_rGrid.GetWidth()/(MAX_F_HZ-MIN_F_HZ);
     mag_dB_to_py = (float)m_rGrid.GetHeight()/(m_max_mag_db - m_min_mag_db);
@@ -251,33 +243,13 @@ void PlotSpectrum::drawGraticuleFast(wxGraphicsContext* ctx, bool repaintDataOnl
     // lower RH coords of plot area are (PLOT_BORDER + leftOffset_ + m_rGrid.GetWidth(), 
     //                                   PLOT_BORDER + m_rGrid.GetHeight())
 
-    // Check if small screen size means text will overlap
-
-    float centreFreqHz = (MAX_F_HZ - MIN_F_HZ) / 2.0f;
-
-    int textXStep = STEP_F_HZ*freq_hz_to_px;
-    int textYStep = STEP_MAG_DB*mag_dB_to_py;
-    snprintf(buf, STR_LENGTH, "%.1fk", (STEP_F_HZ - centreFreqHz)/1000.0f);
-    GetTextExtent(buf, &text_w, &text_h);
-    int overlappedX = (text_w > textXStep);
-    int overlappedY = (text_h > textYStep);
-
     // Vertical gridlines
 
+    ctx->SetPen(m_penShortDash);
     for(f=STEP_F_HZ; f<MAX_F_HZ; f+=STEP_F_HZ) {
         x = f*freq_hz_to_px;
         x += PLOT_BORDER + leftOffset_;
-
-        ctx->SetPen(m_penShortDash);
         ctx->StrokeLine(x, m_rGrid.GetHeight() + PLOT_BORDER + bottomOffset_, x, PLOT_BORDER + bottomOffset_);
-
-        if (!repaintDataOnly)
-        {
-            snprintf(buf, STR_LENGTH, "%.1fk", (f - centreFreqHz)/1000.0f);
-            GetTextExtent(buf, &text_w, &text_h);
-            if (!overlappedX)
-                ctx->DrawText(buf, x - text_w/2, (PLOT_BORDER + bottomOffset_ - YBOTTOM_TEXT_OFFSET * 2 - text_h) / 2);
-        }
     }
 
     ctx->SetPen(wxPen(foregroundColor, 1));
@@ -297,15 +269,129 @@ void PlotSpectrum::drawGraticuleFast(wxGraphicsContext* ctx, bool repaintDataOnl
         y += PLOT_BORDER + bottomOffset_;
         ctx->StrokeLine(PLOT_BORDER + leftOffset_, y,
                 (m_rGrid.GetWidth() + PLOT_BORDER + leftOffset_), y);
-        if (!repaintDataOnly)
-        {
-            snprintf(buf, STR_LENGTH, "%3.0fdB", mag);
+    }
+}
+
+//-------------------------------------------------------------------------
+// drawGraticuleLabels_()
+//-------------------------------------------------------------------------
+void PlotSpectrum::drawGraticuleLabels_(wxGraphicsContext* ctx)
+{
+    int      x, y, text_w, text_h;
+    char     buf[STR_LENGTH];
+    float    f, mag, freq_hz_to_px, mag_dB_to_py;
+
+    wxGraphicsFont tmpFont = ctx->CreateFont(GetFont(), GetForegroundColour());
+    ctx->SetFont(tmpFont);
+
+    freq_hz_to_px = (float)m_rGrid.GetWidth()/(MAX_F_HZ-MIN_F_HZ);
+    mag_dB_to_py = (float)m_rGrid.GetHeight()/(m_max_mag_db - m_min_mag_db);
+
+    // Check if small screen size means text will overlap
+
+    float centreFreqHz = (MAX_F_HZ - MIN_F_HZ) / 2.0f;
+
+    int textXStep = STEP_F_HZ*freq_hz_to_px;
+    int textYStep = STEP_MAG_DB*mag_dB_to_py;
+    snprintf(buf, STR_LENGTH, "%.1fk", (STEP_F_HZ - centreFreqHz)/1000.0f);
+    GetTextExtent(buf, &text_w, &text_h);
+    int overlappedX = (text_w > textXStep);
+    int overlappedY = (text_h > textYStep);
+
+    if (!overlappedX)
+    {
+        for(f=STEP_F_HZ; f<MAX_F_HZ; f+=STEP_F_HZ) {
+            x = f*freq_hz_to_px;
+            x += PLOT_BORDER + leftOffset_;
+
+            snprintf(buf, STR_LENGTH, "%.1fk", (f - centreFreqHz)/1000.0f);
             GetTextExtent(buf, &text_w, &text_h);
-            auto top = y - text_h / 2;
-            if (!overlappedY)
-                 ctx->DrawText(buf, PLOT_BORDER + leftOffset_ - text_w - XLEFT_TEXT_OFFSET, top);
+            ctx->DrawText(buf, x - text_w/2, (PLOT_BORDER + bottomOffset_ - YBOTTOM_TEXT_OFFSET * 2 - text_h) / 2);
         }
     }
+
+    if (!overlappedY)
+    {
+        for(mag=m_min_mag_db; mag<=m_max_mag_db; mag+=STEP_MAG_DB) {
+            y = -(mag - m_max_mag_db) * mag_dB_to_py;
+            y += PLOT_BORDER + bottomOffset_;
+
+            snprintf(buf, STR_LENGTH, "%3.0fdB", mag);
+            GetTextExtent(buf, &text_w, &text_h);
+            ctx->DrawText(buf, PLOT_BORDER + leftOffset_ - text_w - XLEFT_TEXT_OFFSET, y - text_h / 2);
+        }
+    }
+}
+
+//-------------------------------------------------------------------------
+// drawGraticuleFast()
+//-------------------------------------------------------------------------
+void PlotSpectrum::drawGraticuleFast(wxGraphicsContext* ctx, bool repaintDataOnly)
+{
+    int      x;
+    float    freq_hz_to_px;
+
+#if wxCHECK_VERSION(3,2,0)
+    // The gridlines and ticks only change when the control's size, colors or magnitude
+    // range do, but drawing them was most of the time spent drawing the spectrum (the
+    // dashed gridlines especially). So they're rendered once into a transparent bitmap
+    // that's then drawn over the spectrum on every repaint. The axis labels are drawn
+    // directly instead: on Windows, GDI+ antialiases text in a transparent bitmap against
+    // black and makes the edge pixels opaque, so dark text came out looking bold.
+    GraticuleKey key;
+    key.size = GetClientSize();
+    // Logical to physical pixels: 2 on a Retina Mac, but always 1 on Windows, where window
+    // sizes are already in physical pixels (GetDPIScaleFactor() would make the bitmap twice
+    // too big there, and it'd be drawn at half size).
+    key.scale = GetContentScaleFactor();
+    key.lineColour = wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOWTEXT);
+    key.minMagDb = m_min_mag_db;
+    key.maxMagDb = m_max_mag_db;
+    key.leftOffset = leftOffset_;
+    key.bottomOffset = bottomOffset_;
+    if (graticuleBitmap_.IsNull() || !(key == graticuleKey_))
+    {
+        graticuleBitmap_ = wxGraphicsBitmap();
+        if (key.size.GetWidth() > 0 && key.size.GetHeight() > 0)
+        {
+            wxBitmap bitmap;
+            bitmap.CreateWithDIPSize(key.size, key.scale, 32);
+            bitmap.UseAlpha();
+            {
+                wxMemoryDC dc(bitmap);
+                wxGraphicsContext* bitmapCtx = wxGraphicsContext::Create(dc);
+                if (bitmapCtx != nullptr)
+                {
+                    bitmapCtx->SetCompositionMode(wxCOMPOSITION_CLEAR);
+                    bitmapCtx->DrawRectangle(0, 0, key.size.GetWidth(), key.size.GetHeight());
+                    bitmapCtx->SetCompositionMode(wxCOMPOSITION_OVER);
+                    drawGraticuleLines_(bitmapCtx);
+                    delete bitmapCtx;
+                }
+            }
+            graticuleBitmap_ = ctx->CreateBitmap(bitmap);
+        }
+        graticuleKey_ = key;
+    }
+    if (!graticuleBitmap_.IsNull())
+    {
+        ctx->DrawBitmap(graticuleBitmap_, 0, 0, key.size.GetWidth(), key.size.GetHeight());
+    }
+#else
+    // Older wxWidgets can't create a bitmap with an alpha channel to cache the graticule
+    // in, so draw it directly every time.
+    drawGraticuleLines_(ctx);
+#endif // wxCHECK_VERSION(3,2,0)
+
+    // Outside the plot area, the paint buffer is only cleared when the whole control is
+    // repainted, so only draw the labels then (drawing them again on top of themselves
+    // would thicken their antialiased edges).
+    if (!repaintDataOnly)
+    {
+        drawGraticuleLabels_(ctx);
+    }
+
+    freq_hz_to_px = (float)m_rGrid.GetWidth()/(MAX_F_HZ-MIN_F_HZ);
 
     // red rx tuning line
     if (!repaintDataOnly)

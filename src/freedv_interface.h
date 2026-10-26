@@ -55,6 +55,7 @@ extern "C"
 #include "util/IRealtimeHelper.h"
 #include "freedv_sanitizers.h"
 #include "util/realtime_fp.h"
+#include "util/GenericFIFO.h"
 
 class IPipelineStep;
 class RADETransmitStep;
@@ -66,7 +67,7 @@ public:
     FreeDVInterface();
     virtual ~FreeDVInterface();
     
-    void start(int fifoSizeMs, bool usingReliableText);
+    void start(int fifoSizeMs, bool usingReliableText, bool verbose = false);
     void stop();
     bool isRunning() const { return rade_ != nullptr; }
     
@@ -144,7 +145,11 @@ private:
     RADETransmitStep *radeTxStep_;
     std::atomic<int> sync_;
     std::atomic<int> radeSnr_;
+    std::atomic<float> rxFreqOffset_; // published by the RX thread for the GUI
     rade_text_t radeTextPtr_;
+    
+    static constexpr int RELIABLE_TEXT_FIFO_SIZE = 64;
+    GenericFIFO<char> reliableTextFifo_;
 
     void radeSyncFn_(RADEReceiveStep* step) FREEDV_NONBLOCKING;
 };

@@ -14,6 +14,7 @@
 #include "main.h"
 
 #include "git_version.h"
+#include "build_date.h"
 #include "gui/dialogs/dlg_filter.h"
 #include "gui/dialogs/dlg_options.h"
 #include "gui/dialogs/dlg_setup_wizard.h"
@@ -26,12 +27,21 @@
 #include "rig_control/omnirig/OmniRigController.h"
 #endif // defined(WIN32)
 
-extern int   g_analog;
+extern std::atomic<int>   g_analog;
 extern std::atomic<bool>   g_tx;
+extern std::atomic<int64_t> g_rxMutedUntilNs;
+extern std::atomic<int64_t> g_rxInputLatencyUs;
+
+// Maximum time to keep RX muted after TX while waiting for the radio to
+// confirm that it has stopped transmitting.
+static constexpr auto RX_MUTE_MAX_WAIT_FOR_RADIO = std::chrono::milliseconds(2000);
+
+extern std::atomic<bool>  g_monitorTxAudio;
+extern std::atomic<float> g_monitorTxAudioVol;
 extern std::atomic<int>   g_State, g_prev_State;
 extern FreeDVInterface freedvInterface;
 extern short *g_error_hist, *g_error_histn;
-extern int g_resyncs;
+extern std::atomic<int> g_resyncs;
 extern int g_Nc;
 extern int g_txLevel;
 extern std::atomic<float> g_txLevelScale;
@@ -46,10 +56,12 @@ extern paCallBackData* g_rxUserdata;
 
 extern std::atomic<SNDFILE*>            g_sfRecFileFromModulator;
 extern std::atomic<bool>                g_recFileFromModulator;
-extern SNDFILE            *g_sfRecFile;
-extern bool g_recFileFromRadio;
+extern std::atomic<SNDFILE*> g_sfRecFile;
+extern std::atomic<bool> g_recFileFromRadio;
 
-extern SNDFILE            *g_sfRecMicFile;
+extern std::atomic<bool>                g_playFileFromRadio;
+
+extern std::atomic<SNDFILE*> g_sfRecMicFile;
 
 extern wxMutex g_mutexProtectingCallbackData;
 
@@ -68,14 +80,6 @@ void MainFrame::topFrame_OnSize( wxSizeEvent& event )
 {
     m_auiNbookCtrl->Refresh();
     TopFrame::topFrame_OnSize(event);
-}
-
-//-------------------------------------------------------------------------
-// OnExitClick()
-//-------------------------------------------------------------------------
-void MainFrame::OnExitClick(wxCommandEvent& event)
-{
-    OnExit(event);
 }
 
 void MainFrame::OnActivateWindow(wxActivateEvent& event)
@@ -123,7 +127,7 @@ void MainFrame::OnToolsSetupWizard(wxCommandEvent&)
 
 void MainFrame::OnToolsSetupWizardUI(wxUpdateUIEvent& event)
 {
-    event.Enable(!m_RxRunning);
+    event.Enable(!m_RxRunning.load(std::memory_order_acquire));
 }
 
 //-------------------------------------------------------------------------
@@ -135,7 +139,7 @@ void MainFrame::OnToolsFilter(wxCommandEvent& event)
     
     if (m_filterDialog == nullptr)
     {
-         m_filterDialog = new FilterDlg(NULL, m_RxRunning, &m_newMicInFilter, &m_newSpkOutFilter);
+         m_filterDialog = new FilterDlg(NULL, m_RxRunning.load(std::memory_order_acquire), &m_newMicInFilter, &m_newSpkOutFilter);
     }
     else
     {
@@ -155,6 +159,23 @@ void MainFrame::OnToolsOptions(wxCommandEvent& event)
     bool oldFreqAsKHz = wxGetApp().appConfiguration.reportingConfiguration.reportingFrequencyAsKhz;
 
     wxUnusedVar(event);
+
+    if (optionsDlg == nullptr)
+    {
+        optionsDlg = new OptionsDlg(NULL);
+        // Initialize the session-active state so controls are displayed
+        // correctly in case a session is already running.
+        optionsDlg->setSessionActive(m_RxRunning.load(std::memory_order_acquire));
+    }
+    else
+    {
+        // The same dialog is shown each time, and still has the return code it
+        // was closed with the last time. wxWidgets 3.3.4 on GTK takes one that's
+        // already set to mean that the dialog closed itself while being set up,
+        // and so wouldn't show it a second time.
+        optionsDlg->SetReturnCode(0);
+    }
+
     if (optionsDlg->ShowModal() == wxOK)
     {
         // Enable/disable FreeDV Reporter quick options
@@ -164,6 +185,12 @@ void MainFrame::OnToolsOptions(wxCommandEvent& event)
 
         // Update reporting list.
         updateReportingFreqList_();
+
+        // UDP logging may have been turned on or off.
+        if (!m_RxRunning.load(std::memory_order_acquire))
+        {
+            m_logQSO->Enable(canLogQso_());
+        }
     
         // Show/hide frequency box based on CAT control configuration.
         m_freqBox->Show(isFrequencyControlEnabled_());
@@ -210,6 +237,7 @@ void MainFrame::OnToolsOptions(wxCommandEvent& event)
         {
             // Clear filename to force reselection next time VK is triggered.
             vkFileName_ = "";
+            vkFileCache_.preload(vkFileName_);
             wxGetApp().appConfiguration.voiceKeyerWaveFile = "";
             setVoiceKeyerButtonLabel_("");
         }
@@ -255,7 +283,7 @@ void MainFrame::OnToolsOptions(wxCommandEvent& event)
         }
 
         // Initialize FreeDV Reporter if required.
-        if (!m_RxRunning)
+        if (!m_RxRunning.load(std::memory_order_acquire))
         {
             initializeFreeDVReporter_();
         }
@@ -283,7 +311,7 @@ void MainFrame::OnToolsOptionsUI(wxUpdateUIEvent&)
 //-------------------------------------------------------------------------
 void MainFrame::OnHelpCheckUpdates(wxCommandEvent&)
 {
-    wxLaunchDefaultBrowser("https://github.com/drowe67/freedv-gui/releases");
+    LaunchBrowser("https://github.com/freedv/freedv-gui/releases");
 }
 
 //-------------------------------------------------------------------------
@@ -291,7 +319,7 @@ void MainFrame::OnHelpCheckUpdates(wxCommandEvent&)
 //-------------------------------------------------------------------------
 void MainFrame::OnHelpCheckUpdatesUI(wxUpdateUIEvent& event)
 {
-    event.Enable(!m_RxRunning);
+    event.Enable(!m_RxRunning.load(std::memory_order_acquire));
 }
 
 //-------------------------------------------------------------------------
@@ -299,7 +327,7 @@ void MainFrame::OnHelpCheckUpdatesUI(wxUpdateUIEvent& event)
 //-------------------------------------------------------------------------
 void MainFrame::OnHelpManual( wxCommandEvent& )
 {
-    wxLaunchDefaultBrowser("https://github.com/drowe67/freedv-gui/blob/master/USER_MANUAL.pdf");
+    LaunchBrowser("https://github.com/freedv/freedv-gui/blob/master/USER_MANUAL.pdf");
 }
 
 //-------------------------------------------------------------------------
@@ -307,7 +335,7 @@ void MainFrame::OnHelpManual( wxCommandEvent& )
 //-------------------------------------------------------------------------
 void MainFrame::OnHelp( wxCommandEvent& )
 {
-    wxLaunchDefaultBrowser("https://freedv.org/#getting-help");
+    LaunchBrowser("https://freedv.org/#getting-help");
 }
 
 //-------------------------------------------------------------------------
@@ -319,19 +347,21 @@ void MainFrame::OnHelpAbout(wxCommandEvent& event)
     wxString msg;
     wxString version = wxString::FromUTF8(GetFreeDVVersion().c_str());
 
-    msg.Printf( wxT("FreeDV GUI %s\n\n")
-                wxT("For Help and Support visit: http://freedv.org\n\n")
+    // TRANSLATORS: The first two %s are the FreeDV version, the third is the git
+    // commit hash and the fourth is the Hamlib version.
+    msg.Printf( _("FreeDV GUI %s\n\n"
+                "For Help and Support visit: http://freedv.org\n\n"
 
-                wxT("GNU Public License V2.1\n\n")
-                wxT("Created by David Witten KD0EAG and David Rowe VK5DGR (2012).  ")
-                wxT("Currently maintained by Mooneer Salem K6AQ and David Rowe VK5DGR.\n\n")
-                wxT("freedv-gui version: %s\n")
-                wxT("freedv-gui git hash: %s\n")
-                wxT("Using %s\n")
+                "GNU Public License V2.1\n\n"
+                "Created by David Witten KD0EAG and David Rowe VK5DGR (2012).  "
+                "Currently maintained by Mooneer Salem K6AQ and David Rowe VK5DGR.\n\n"
+                "freedv-gui version: %s\n"
+                "freedv-gui git hash: %s\n"
+                "Using %s\n")
                 , version, version, FREEDV_GIT_HASH, hamlib_version
                 );
 
-    wxMessageBox(msg, wxT("About"), wxOK | wxICON_INFORMATION, this);
+    wxMessageBox(msg, _("About"), wxOK | wxICON_INFORMATION, this);
 }
 
 void MainFrame::onFrequencyModeChange_(IRigFrequencyController*, uint64_t freq, IRigFrequencyController::Mode mode)
@@ -375,7 +405,7 @@ void MainFrame::onFrequencyModeChange_(IRigFrequencyController*, uint64_t freq, 
                 m_txtModeStatus->Enable(true);
                 break;
             default:
-                m_txtModeStatus->SetLabel(wxT("unk"));
+                m_txtModeStatus->SetLabel(_("unk"));
                 m_txtModeStatus->Enable(false);
                 break;
         }
@@ -397,7 +427,7 @@ void MainFrame::onFrequencyModeChange_(IRigFrequencyController*, uint64_t freq, 
         // analog voice mode (g_analog) -- NOT on hamlibUseAnalogModes, which
         // is purely a USB/LSB-vs-DIGU/DIGL label preference still used while
         // transmitting digital FreeDV.
-        uint64_t displayFreq = DialToDisplayFreq(newFreq, mode, g_analog != 0);
+        uint64_t displayFreq = DialToDisplayFreq(newFreq, mode, g_analog.load(std::memory_order_relaxed) != 0);
 
         // Widest 60 meter allocation is 5.250-5.450 MHz per https://en.wikipedia.org/wiki/60-meter_band.
         bool is60MeterBand = newFreq >= 5250000 && newFreq <= 5450000;
@@ -406,10 +436,10 @@ void MainFrame::onFrequencyModeChange_(IRigFrequencyController*, uint64_t freq, 
         bool isUsbFreq = newFreq >= 10000000 || is60MeterBand;
         bool isLsbFreq = newFreq < 10000000 && !is60MeterBand;
 
-        bool isMatchingMode = 
+        bool isMatchingMode =
             (!g_analog && (mode == IRigFrequencyController::USB || mode == IRigFrequencyController::DIGU)) ||
-            (isUsbFreq && (mode == IRigFrequencyController::USB)) ||
-            (isLsbFreq && (mode == IRigFrequencyController::LSB));
+            (g_analog && isUsbFreq && (mode == IRigFrequencyController::USB)) ||
+            (g_analog && isLsbFreq && (mode == IRigFrequencyController::LSB));
 
         if (isMatchingMode)
         {
@@ -420,8 +450,13 @@ void MainFrame::onFrequencyModeChange_(IRigFrequencyController*, uint64_t freq, 
             m_txtModeStatus->SetForegroundColour(wxColor(*wxRED));
         }
 
-        // Update frequency box
-        if (!suppressFreqModeUpdates_ && (
+        // Update frequency box, unless what's reported was read from the
+        // radio before the frequency FreeDV last asked for was set: that would
+        // put FreeDV back where it was for a moment (and anything done in that
+        // moment, e.g. switching to analog, would go by the old frequency).
+        bool staleFrequency = wxGetApp().rigFrequencyController != nullptr &&
+            wxGetApp().rigFrequencyController->isFrequencyChangePending(freq);
+        if (!suppressFreqModeUpdates_ && !staleFrequency && (
             !wxGetApp().appConfiguration.reportingConfiguration.reportingEnabled ||
             !wxGetApp().appConfiguration.reportingConfiguration.manualFrequencyReporting))
         {
@@ -458,7 +493,7 @@ void MainFrame::onFrequencyModeChange_(IRigFrequencyController*, uint64_t freq, 
 
         // Auto-save outgoing band levels, then load the new band's levels
         auto newBandEnum = FreeDVReporterDialog::getFilterForFrequency_(newFreq);
-        if (newBandEnum != BAND_OTHER && newBandEnum != lastBand_)
+        if (!staleFrequency && newBandEnum != BAND_OTHER && newBandEnum != lastBand_)
         {
             autoSaveCurrentBandLevels_();
             lastBand_ = newBandEnum;
@@ -484,7 +519,7 @@ void MainFrame::onRadioConnected_(IRigController*)
         // on the hamlibUseAnalogModes label preference.
         auto mode = getCurrentMode_();
         wxGetApp().rigFrequencyController->setFrequency(
-            DisplayToDialFreq(wxGetApp().appConfiguration.reportingConfiguration.reportingFrequency, mode, g_analog != 0));
+            DisplayToDialFreq(wxGetApp().appConfiguration.reportingConfiguration.reportingFrequency, mode, g_analog.load(std::memory_order_relaxed) != 0));
 
         if (wxGetApp().appConfiguration.rigControlConfiguration.hamlibEnableFreqModeChanges)
         {
@@ -496,9 +531,35 @@ void MainFrame::onRadioConnected_(IRigController*)
 void MainFrame::onRadioDisconnected_(IRigController*)
 {
     CallAfter([&]() {
-        m_txtModeStatus->SetLabel(wxT("unk"));
+        m_txtModeStatus->SetLabel(_("unk"));
         m_txtModeStatus->Enable(false);
     });
+}
+
+//-------------------------------------------------------------------------
+// onRigPttChange_(): called (from the rig control thread) once the radio
+// has acknowledged a PTT change.
+//-------------------------------------------------------------------------
+void MainFrame::onRigPttChange_(bool pttState)
+{
+    if (pttState)
+    {
+        return;
+    }
+    
+    // The radio is back in RX. If we're still waiting for that after TX,
+    // resume RX once audio captured while it was transmitting has made it
+    // through the input device.
+    auto now = std::chrono::steady_clock::now();
+    auto nowInNanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+    if (g_rxMutedUntilNs.load(std::memory_order_acquire) > nowInNanoseconds)
+    {
+        auto resumeAt = now + std::chrono::microseconds(g_rxInputLatencyUs.load(std::memory_order_acquire));
+        g_rxMutedUntilNs.store(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(resumeAt.time_since_epoch()).count(),
+            std::memory_order_release);
+        log_info("Radio confirmed PTT off, resuming RX in %d us", (int)g_rxInputLatencyUs.load(std::memory_order_acquire));
+    }
 }
 
 // Attempt to talk to rig using Hamlib
@@ -510,9 +571,8 @@ bool MainFrame::OpenHamlibRig() {
     int rig = wxGetApp().m_intHamlibRig;    
     if (rig == -1)
     {
-        std::string fullErr = "The radio's model is empty. This is likely due to changes in Hamlib between FreeDV releases. Please click Stop Modem, double-check your CAT settings and push Start Modem again.";
-        CallAfter([&, fullErr]() {
-            wxMessageBox(fullErr, wxT("Error"), wxOK | wxICON_ERROR, this);
+        CallAfter([&]() {
+            wxMessageBox(_("The radio's model is empty. This is likely due to changes in Hamlib between FreeDV releases. Please click Stop Modem, double-check your CAT settings and push Start Modem again."), _("Error"), wxOK | wxICON_ERROR, this);
         });
         return false;
     }
@@ -540,9 +600,10 @@ bool MainFrame::OpenHamlibRig() {
         
         wxGetApp().rigFrequencyController->onRigError += [this](IRigController*, std::string const& err)
         {
-            std::string fullErr = "Couldn't connect to Radio with hamlib: " + err;
-            CallAfter([&, fullErr]() {
-                wxMessageBox(fullErr, wxT("Error"), wxOK | wxICON_ERROR, this);
+            CallAfter([&, err]() {
+                // TRANSLATORS: %s is the error message returned by Hamlib.
+                wxString fullErr = wxString::Format(_("Couldn't connect to Radio with hamlib: %s"), wxString::FromUTF8(err.c_str()));
+                wxMessageBox(fullErr, _("Error"), wxOK | wxICON_ERROR, this);
             });
         };
 
@@ -556,6 +617,10 @@ bool MainFrame::OpenHamlibRig() {
 
         wxGetApp().rigFrequencyController->onFreqModeChange += [&](IRigFrequencyController* ptr, uint64_t freq, IRigFrequencyController::Mode mode) {
             onFrequencyModeChange_(ptr, freq, mode);
+        };
+        
+        wxGetApp().rigPttController->onPttChange += [&](IRigPttController*, bool state) {
+            onRigPttChange_(state);
         };
         wxGetApp().rigFrequencyController->connect();
         return true;
@@ -580,13 +645,17 @@ void MainFrame::OpenOmniRig()
     if (!wxGetApp().rigPttController)
     {
         wxGetApp().rigPttController = tmp;
+        wxGetApp().rigPttController->onPttChange += [&](IRigPttController*, bool state) {
+            onRigPttChange_(state);
+        };
     }
 
     wxGetApp().rigFrequencyController->onRigError += [this](IRigController*, std::string err)
     {
-        std::string fullErr = "Couldn't connect to Radio with OmniRig: " + err;
-        CallAfter([&, fullErr]() {
-            wxMessageBox(fullErr, wxT("Error"), wxOK | wxICON_ERROR, this);
+        CallAfter([&, err]() {
+            // TRANSLATORS: %s is the error message returned by OmniRig.
+            wxString fullErr = wxString::Format(_("Couldn't connect to Radio with OmniRig: %s"), wxString::FromUTF8(err.c_str()));
+            wxMessageBox(fullErr, _("Error"), wxOK | wxICON_ERROR, this);
         });
     };
 
@@ -605,18 +674,6 @@ void MainFrame::OpenOmniRig()
     wxGetApp().rigFrequencyController->connect();
 }
 #endif // defined(WIN32)
-
-//-------------------------------------------------------------------------
-// OnCloseFrame()
-//-------------------------------------------------------------------------
-void MainFrame::OnCloseFrame(wxCloseEvent&)
-{
-    auto engine = AudioEngineFactory::GetAudioEngine();
-    engine->stop();
-    engine->setOnEngineError(nullptr, nullptr);
-    
-    Destroy();
-}
 
 //-------------------------------------------------------------------------
 // OnTop()
@@ -643,16 +700,14 @@ void MainFrame::OnTop(wxCommandEvent& event)
 void MainFrame::OnDeleteConfig(wxCommandEvent&)
 {
     wxMessageDialog messageDialog(
-        this, "Would you like to restore configuration to defaults?", wxT("Restore Defaults"),
+        this, _("Would you like to restore configuration to defaults?"), _("Restore Defaults"),
         wxYES_NO | wxICON_QUESTION | wxCENTRE);
 
-    auto answer = messageDialog.ShowModal();
+    auto answer = ShowMessageDialog(messageDialog);
     if (answer == wxID_YES)
     {
         if(pConfig->DeleteAll())
         {
-            wxLogMessage(wxT("Config file/registry key successfully deleted."));
-            
             if (wxGetApp().m_sharedReporterObject)
             {
                 wxGetApp().m_sharedReporterObject = nullptr;
@@ -669,10 +724,12 @@ void MainFrame::OnDeleteConfig(wxCommandEvent&)
             
             // Resets all configuration to defaults.
             loadConfiguration_();
+
+            wxMessageBox(_("Config file/registry key successfully deleted."), _("Restore Defaults"), wxOK | wxICON_INFORMATION, this);
         }
         else
         {
-            wxLogError(wxT("Deleting config file/registry key failed."));
+            wxMessageBox(_("Deleting config file/registry key failed."), _("Restore Defaults"), wxOK | wxICON_ERROR, this);
         }
     }
 }
@@ -682,21 +739,7 @@ void MainFrame::OnDeleteConfig(wxCommandEvent&)
 //-------------------------------------------------------------------------
 void MainFrame::OnDeleteConfigUI( wxUpdateUIEvent& event )
 {
-    event.Enable(!m_RxRunning);
-}
-
-//-------------------------------------------------------------------------
-// Paint()
-//-------------------------------------------------------------------------
-void MainFrame::OnPaint(wxPaintEvent& WXUNUSED(event))
-{
-    wxPaintDC dc(this);
-
-    if(GetMenuBar()->IsChecked(ID_PAINT_BG))
-    {
-        dc.Clear();
-    }
-    dc.SetUserScale(m_zoom, m_zoom);
+    event.Enable(!m_RxRunning.load(std::memory_order_acquire));
 }
 
 //-------------------------------------------------------------------------
@@ -865,7 +908,7 @@ void MainFrame::OnTxLevelContextMenu( wxContextMenuEvent& )
         applyTxLevel();
     }, restoreItem->GetId());
 
-    PopupMenu(&menu);
+    ShowPopupMenu(this, &menu);
 }
 
 void MainFrame::OnTuneAttenContextMenu( wxContextMenuEvent& )
@@ -911,7 +954,7 @@ void MainFrame::OnTuneAttenContextMenu( wxContextMenuEvent& )
         }, restoreItem->GetId());
     }
 
-    PopupMenu(&menu);
+    ShowPopupMenu(this, &menu);
 }
 
 //-------------------------------------------------------------------------
@@ -920,20 +963,24 @@ void MainFrame::OnTuneAttenContextMenu( wxContextMenuEvent& )
 void MainFrame::OnChangeMicSpkrLevel( wxScrollEvent& )
 {
     auto sliderLevel = (double)m_sliderMicSpkrLevel->GetValue() / 10.0;
-    
-    if (g_tx.load(std::memory_order_acquire))
-    {
-        wxGetApp().appConfiguration.filterConfiguration.micInChannel.volInDB = sliderLevel;
-        m_newMicInFilter = true;
-    }
-    else
-    {
-        wxGetApp().appConfiguration.filterConfiguration.spkOutChannel.volInDB = sliderLevel;
-        m_newSpkOutFilter = true;
-    }
+    wxGetApp().appConfiguration.filterConfiguration.spkOutChannel.volInDB = sliderLevel;
+    m_newSpkOutFilter.store(true, std::memory_order_release);
     
     wxString fmtString = wxString::Format(MIC_SPKR_LEVEL_FORMAT_STR, wxNumberFormatter::ToString((double)sliderLevel, 1), DECIBEL_STR);
     m_txtMicSpkrLevelNum->SetLabel(fmtString);
+}
+
+void MainFrame::syncSpeakerLevelWithConfiguration()
+{
+    double sliderVal = wxGetApp().appConfiguration.filterConfiguration.spkOutChannel.volInDB;
+
+    if ((sliderVal * 10) != m_sliderMicSpkrLevel->GetValue())
+    {
+        m_sliderMicSpkrLevel->SetValue(sliderVal * 10);
+        m_sliderMicSpkrLevel->Refresh();
+        wxString fmt = wxString::Format(MIC_SPKR_LEVEL_FORMAT_STR, wxNumberFormatter::ToString(sliderVal, 1), DECIBEL_STR);
+        m_txtMicSpkrLevelNum->SetLabel(fmt);
+    }
 }
 
 void MainFrame::setsnrBeta(bool snrSlow)
@@ -976,7 +1023,7 @@ int MainApp::FilterEvent(wxEvent& event)
 
             // m_pttKeyRequireRelease_ blocks a key held through a forced TX stop
             // (e.g. TOT) from immediately restarting TX -- see main.h.
-            if (frame->m_RxRunning && !tuneActive && !frame->m_pttKeyRequireRelease_ &&
+            if (frame->m_RxRunning.load(std::memory_order_acquire) && !tuneActive && !frame->m_pttKeyRequireRelease_ &&
                 (mainWindowActive || totWarningActive || reporterActiveButNotUpdatingTextMessage) &&
                 wxGetApp().appConfiguration.enableSpaceBarForPTT && !frame->isReceiveOnly()) {
 
@@ -1018,7 +1065,7 @@ int MainApp::FilterEvent(wxEvent& event)
                 frame->m_reporterDialog != nullptr && frame->m_reporterDialog->IsActive() &&
                 !frame->m_reporterDialog->isTextMessageFieldInFocus();
             bool totWarningActive = frame->m_totWarningDialog_ != nullptr && frame->m_totWarningDialog_->IsActive();
-            if (frame->m_RxRunning && (mainWindowActive || totWarningActive || reporterActiveButNotUpdatingTextMessage) &&
+            if (frame->m_RxRunning.load(std::memory_order_acquire) && (mainWindowActive || totWarningActive || reporterActiveButNotUpdatingTextMessage) &&
                 wxGetApp().appConfiguration.enableSpaceBarForPTT && !frame->isReceiveOnly() &&
                 wxGetApp().appConfiguration.pttMomentaryMode) {
 
@@ -1048,12 +1095,13 @@ int MainApp::FilterEvent(wxEvent& event)
 void MainFrame::OnSetMonitorTxAudio( wxCommandEvent& event )
 {
     wxGetApp().appConfiguration.monitorTxAudio = event.IsChecked();
+    g_monitorTxAudio.store(wxGetApp().appConfiguration.monitorTxAudio, std::memory_order_release);
     adjustMonitorPttVolMenuItem_->Enable(wxGetApp().appConfiguration.monitorTxAudio);
 }
 
 void MainFrame::OnSetMonitorTxAudioVol( wxCommandEvent& )
 {
-    auto popup = new MonitorVolumeAdjPopup(this, wxGetApp().appConfiguration.monitorTxAudioVol);
+    auto popup = new MonitorVolumeAdjPopup(this, wxGetApp().appConfiguration.monitorTxAudioVol, g_monitorTxAudioVol);
     popup->Popup();
 }
 
@@ -1062,7 +1110,7 @@ void MainFrame::OnSetMonitorTxAudioVol( wxCommandEvent& )
 //-------------------------------------------------------------------------
 void MainFrame::OnTogBtnPTTRightClick( wxContextMenuEvent& )
 {
-    m_btnTogPTT->PopupMenu(pttPopupMenu_, LeftOffsetContextMenuPosition(m_btnTogPTT));
+    ShowPopupMenu(m_btnTogPTT, pttPopupMenu_, LeftOffsetContextMenuPosition(m_btnTogPTT));
 }
 
 //-------------------------------------------------------------------------
@@ -1290,6 +1338,12 @@ void MainFrame::togglePTT(void) {
     }
     txChangeoverOccurring_ = true;
 
+    // If we're playing a RX file, we want to stop it before TX.
+    if (g_playFileFromRadio.load(std::memory_order_acquire))
+    {
+        StopPlaybackFileFromRadio();
+    }
+
     std::chrono::high_resolution_clock highResClock;
 
     // Record direction now; button value may be toggled by a stray click during
@@ -1311,7 +1365,7 @@ void MainFrame::togglePTT(void) {
         // reliably set, so don't mess with it in the first place.
         m_btnTogPTT->SetForegroundColour(*wxBLACK);
 #endif // !defined(__APPLE__)
-        m_btnTogPTT->SetLabel("TX Ending");
+        m_btnTogPTT->SetLabel(_("TX Ending"));
         m_btnTogPTT->Refresh();
 
         // Stop Time-Out Timer on TX->RX transition (user stopped, VK finished, or TOT fired).
@@ -1378,12 +1432,12 @@ void MainFrame::togglePTT(void) {
             }
         }
 
-        int sample = g_outfifo1_empty;
+        int sample = g_outfifo1_empty.load(std::memory_order_relaxed);
         before = highResClock.now();
         while(true)
         {
             auto diff = highResClock.now() - before;
-            auto tmp = g_outfifo1_empty.load(std::memory_order_acquire);
+            auto tmp = g_outfifo1_empty.load(std::memory_order_relaxed);
             if (diff >= std::chrono::milliseconds(1000) || (tmp != sample))
             {
                 log_info("All TX finished (diff = %d ms, fifo_empty = %d, sample = %d), going out of PTT", (int)std::chrono::duration_cast<std::chrono::milliseconds>(diff).count(), tmp, sample);
@@ -1441,6 +1495,19 @@ void MainFrame::togglePTT(void) {
                 wxGetApp().Yield(true);
             }
         }
+        // The radio keeps transmitting until it has processed the PTT-off
+        // request below, so keep RX muted until it confirms (see
+        // onRigPttChange_()). If it never does, give up after a timeout.
+        if (wxGetApp().rigPttController != nullptr && wxGetApp().rigPttController->isConnected())
+        {
+            auto inDevice = rxInSoundDevice;
+            g_rxInputLatencyUs.store(inDevice ? inDevice->getLatencyInMicroseconds() : 0, std::memory_order_release);
+            g_rxMutedUntilNs.store(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    (std::chrono::steady_clock::now() + RX_MUTE_MAX_WAIT_FOR_RADIO).time_since_epoch()).count(),
+                std::memory_order_release);
+        }
+        
         g_tx.store(false, std::memory_order_release);
         endingTx.store(false, std::memory_order_release);
         
@@ -1523,7 +1590,6 @@ void MainFrame::togglePTT(void) {
     // reset level gauge
 
     m_maxLevel = 0;
-    m_textLevel->SetLabel(wxT(""));
     m_gaugeLevel->SetValue(0);
     
     // Report TX change to registered reporters
@@ -1533,16 +1599,16 @@ void MainFrame::togglePTT(void) {
     }
     
     // If we're recording, switch to/from modulator and radio.
-    if (g_sfRecFile != nullptr)
+    if (g_sfRecFile.load(std::memory_order_acquire) != nullptr)
     {
         if (!newTx)
         {
             g_recFileFromModulator = false;
-            g_recFileFromRadio = true;
+            g_recFileFromRadio.store(true, std::memory_order_release);
         }
         else
         {
-            g_recFileFromRadio = false;
+            g_recFileFromRadio.store(false, std::memory_order_release);
             g_recFileFromModulator = true;
         }
     }
@@ -1611,26 +1677,8 @@ void MainFrame::togglePTT(void) {
     m_cboReportFrequency->Enable(!newTx);
     m_btnTogTune->Enable(!newTx);
 
-    if (newTx)
-    {
-        micSpeakerBox->SetLabel("Mic &Level");
-
-        m_sliderMicSpkrLevel->SetValue(wxGetApp().appConfiguration.filterConfiguration.micInChannel.volInDB * 10);
-        wxString fmtString = wxString::Format(MIC_SPKR_LEVEL_FORMAT_STR, wxNumberFormatter::ToString((double)wxGetApp().appConfiguration.filterConfiguration.micInChannel.volInDB, 1), DECIBEL_STR);
-        m_txtMicSpkrLevelNum->SetLabel(fmtString);
-    }
-    else
-    {
-        micSpeakerBox->SetLabel("Speaker &Level");
-
-        m_sliderMicSpkrLevel->SetValue(wxGetApp().appConfiguration.filterConfiguration.spkOutChannel.volInDB * 10);
-        wxString fmtString = wxString::Format(MIC_SPKR_LEVEL_FORMAT_STR, wxNumberFormatter::ToString((double)wxGetApp().appConfiguration.filterConfiguration.spkOutChannel.volInDB, 1), DECIBEL_STR);
-        m_txtMicSpkrLevelNum->SetLabel(fmtString);
-    }
-
     CallAfter([&]() {
         txChangeoverOccurring_ = false;
-        m_sliderMicSpkrLevel->Refresh(); // Redraw doesn't happen immediately otherwise in some environments
     });
 
     if (newTx && m_momentaryKeyReleasedDuringChangeover_)
@@ -1674,12 +1722,12 @@ void MainFrame::OnTogBtnTune(wxCommandEvent&)
     if (newTx)
     {
         fmtString = wxString::Format(MIC_SPKR_LEVEL_FORMAT_STR, wxNumberFormatter::ToString((double)g_tuneLevel/10.0, 1), DECIBEL_STR);
-        m_txLevelBox->SetLabel("Tune &Attenuation");
+        m_txLevelBox->SetLabel(_("Tune &Attenuation"));
     }
     else
     {
         fmtString = wxString::Format(MIC_SPKR_LEVEL_FORMAT_STR, wxNumberFormatter::ToString((double)g_txLevel/10.0, 1), DECIBEL_STR);
-        m_txLevelBox->SetLabel("TX &Attenuation");
+        m_txLevelBox->SetLabel(_("TX &Attenuation"));
     }
 
     m_txtTxLevelNum->SetLabel(fmtString);
@@ -1691,10 +1739,11 @@ void MainFrame::OnTogBtnTune(wxCommandEvent&)
 
 HamlibRigController::Mode MainFrame::getCurrentMode_()
 {
+    bool useAnalog = g_analog.load(std::memory_order_relaxed);
     return GetModeForFrequency(
         wxGetApp().appConfiguration.reportingConfiguration.reportingFrequency, 
         wxGetApp().appConfiguration.rigControlConfiguration.hamlibUseAnalogModes,
-        g_analog);
+        useAnalog);
 }
 
 //-------------------------------------------------------------------------
@@ -1702,21 +1751,21 @@ HamlibRigController::Mode MainFrame::getCurrentMode_()
 //-------------------------------------------------------------------------
 void MainFrame::OnTogBtnAnalogClick (wxCommandEvent& event)
 {
-    bool wasAnalog = (g_analog != 0);
+    bool wasAnalog = (g_analog.load(std::memory_order_relaxed) != 0);
 
-    if (g_analog == 0) {
-        g_analog = 1;
+    if (g_analog.load(std::memory_order_relaxed) == 0) {
+        g_analog.store(1, std::memory_order_relaxed);
         m_panelSpectrum->setFreqScale(MODEM_STATS_NSPEC*((float)MAX_F_HZ/(FS/2)));
         m_panelWaterfall->setFs(FS);
         
-        m_togBtnAnalog->SetLabel(wxT("Switch to Di&gital"));
+        m_togBtnAnalog->SetLabel(_("Switch to Di&gital"));
     }
     else {
-        g_analog = 0;
+        g_analog.store(0, std::memory_order_relaxed);
         m_panelSpectrum->setFreqScale(MODEM_STATS_NSPEC*((float)MAX_F_HZ/(freedvInterface.getRxModemSampleRate()/2)));
         m_panelWaterfall->setFs(freedvInterface.getRxModemSampleRate());
         
-        m_togBtnAnalog->SetLabel(wxT("Switch to A&nalog"));
+        m_togBtnAnalog->SetLabel(_("Switch to A&nalog"));
     }
 
     updateFreqBoxLabel_();
@@ -1726,7 +1775,7 @@ void MainFrame::OnTogBtnAnalogClick (wxCommandEvent& event)
     {
         if (obj != wxGetApp().m_sharedReporterObject || !m_reporterHidden->GetValue())
         {
-            obj->inAnalogMode(g_analog);
+            obj->inAnalogMode(g_analog.load(std::memory_order_relaxed));
         }
     }
     
@@ -1756,11 +1805,11 @@ void MainFrame::OnTogBtnAnalogClick (wxCommandEvent& event)
 
         uint64_t spot = DialToDisplayFreq(dialFreq, oldMode, false);
 
-        auto newMode = GetModeForFrequency(dialFreq, hamlibUseAnalogModes, g_analog != 0);
+        auto newMode = GetModeForFrequency(dialFreq, hamlibUseAnalogModes, g_analog.load(std::memory_order_relaxed) != 0);
         newDialFreq = DisplayToDialFreq(spot, newMode, false);
         dialFreqChanged = newDialFreq != dialFreq;
 
-        reportingFreq = DialToDisplayFreq(newDialFreq, newMode, g_analog != 0);
+        reportingFreq = DialToDisplayFreq(newDialFreq, newMode, g_analog.load(std::memory_order_relaxed) != 0);
 
         wxString freqString;
         if (wxGetApp().appConfiguration.reportingConfiguration.reportingFrequencyAsKhz)
@@ -1804,7 +1853,7 @@ void MainFrame::OnCallSignReset(wxCommandEvent&)
     m_txtCtrlCallSign->SetValue(s);
     
     m_lastReportedCallsignListView->DeleteAllItems();
-    m_cboLastReportedCallsigns->SetText(_(""));
+    m_cboLastReportedCallsigns->SetText(wxT(""));
 }
 
 void MainFrame::OnLogQSO(wxCommandEvent&)
@@ -1888,9 +1937,8 @@ void MainFrame::OnLogQSO(wxCommandEvent&)
     // Show log contact dialog 
     auto logDialog = new LogEntryDialog(this);
     logDialog->ShowDialog(dxCall.ToUTF8(), dxGrid.ToUTF8(), logTimeObj, (int64_t)dxFreqHz, (int)snr);
+    logDialog->Destroy();
 }
-
-// Force manual resync, just in case demod gets stuck on false sync
 
 // Deselects item on right-click
 void MainFrame::OnRightClickCallsignList(wxMouseEvent&)
@@ -1902,8 +1950,15 @@ void MainFrame::OnRightClickCallsignList(wxMouseEvent&)
         m_lastReportedCallsignListView->Select(index, false);
         index = m_lastReportedCallsignListView->GetFirstSelected();
     }
-    m_cboLastReportedCallsigns->SetText("");
-    m_BtnCallSignReset->SetFocus();
+    // Deselect only -- leave the displayed callsign text alone, consistent
+    // with how the FreeDV Reporter list's right-click-to-deselect behaves.
+    // See OnCloseCallsignList() for why this is deferred and followed by a
+    // forced repaint.
+    CallAfter([this]() {
+        m_BtnCallSignReset->SetFocus();
+        m_cboLastReportedCallsigns->Refresh();
+        m_cboLastReportedCallsigns->Update();
+    });
 }
 
 void MainFrame::OnOpenCallsignList( wxCommandEvent& event )
@@ -1919,15 +1974,28 @@ void MainFrame::OnCloseCallsignList( wxCommandEvent& event )
     {
         // Make sure we're not selected if no callsigns selected.
         wxGetApp().lastSelectedLoggingRow = MainApp::UNSELECTED;
-        m_BtnCallSignReset->SetFocus();
+
+        // Deferred via CallAfter so it runs once the popup's own dismissal
+        // processing has fully finished.
+        CallAfter([this]() {
+            m_BtnCallSignReset->SetFocus();
+
+            // The popup window overlaps the combo's own value area while
+            // open; on dismiss GTK doesn't always damage/repaint that
+            // region, so the combo can be left showing its stale
+            // "focused/selected" look from before the popup covered it.
+            // Force a fresh, synchronous repaint.
+            m_cboLastReportedCallsigns->Refresh();
+            m_cboLastReportedCallsigns->Update();
+        });
     }
     event.Skip();
 }
 
 void MainFrame::resetStats_()
 {
-    if (m_RxRunning)  {
-        g_resyncs = 0;
+    if (m_RxRunning.load(std::memory_order_acquire))  {
+        g_resyncs.store(0, std::memory_order_relaxed);
         int i;
         for(i=0; i<2*g_Nc; i++) {
             g_error_hist[i] = 0;
@@ -2025,7 +2093,7 @@ void MainFrame::OnChangeReportFrequency( wxCommandEvent& )
             // hamlibUseAnalogModes label preference.
             auto mode = getCurrentMode_();
             wxGetApp().rigFrequencyController->setFrequency(
-                DisplayToDialFreq(wxGetApp().appConfiguration.reportingConfiguration.reportingFrequency, mode, g_analog != 0));
+                DisplayToDialFreq(wxGetApp().appConfiguration.reportingConfiguration.reportingFrequency, mode, g_analog.load(std::memory_order_relaxed) != 0));
             if (wxGetApp().appConfiguration.rigControlConfiguration.hamlibEnableFreqModeChanges)
             {
                 wxGetApp().rigFrequencyController->setMode(mode);
@@ -2075,8 +2143,16 @@ void MainFrame::OnReportFrequencyKillFocus(wxFocusEvent& event)
 
 void MainFrame::OnSystemColorChanged(wxSysColourChangedEvent& event)
 {
-    // Works around issues on wxWidgets with certain controls not changing backgrounds
+    // Works around issues on wxWidgets with certain controls not changing colors
     // when the user switches between light and dark mode.
+    if (wxGetApp().appConfiguration.reportingConfiguration.reportingFrequency > 0)
+    {
+        m_cboReportFrequency->SetForegroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOWTEXT));
+    }
+    else
+    {
+        m_cboReportFrequency->SetForegroundColour(*wxRED);
+    }
     TopFrame::OnSystemColorChanged(event);
 }
 
@@ -2092,7 +2168,7 @@ void MainFrame::updateFreqBoxLabel_()
     // whenever analog is active) -- in Analog mode the displayed value *is*
     // the radio's dial frequency, so the label needs to say so.
     bool asKhz = wxGetApp().appConfiguration.reportingConfiguration.reportingFrequencyAsKhz;
-    if (g_analog)
+    if (g_analog.load(std::memory_order_relaxed))
     {
         m_freqBox->SetLabel(asKhz ? _("Radio Freq. (kHz)") : _("Radio Freq. (MHz)"));
     }
@@ -2110,7 +2186,7 @@ void MainFrame::updateFreqBoxTooltip_()
     // (GetCentreFreqOffsetHz() returns 0 there), so a tooltip would just
     // repeat the visible value -- skip it to avoid noise.
     auto freq = wxGetApp().appConfiguration.reportingConfiguration.reportingFrequency.get();
-    if (freq == 0 || g_analog)
+    if (freq == 0 || g_analog.load(std::memory_order_relaxed))
     {
         m_cboReportFrequency->UnsetToolTip();
         return;
@@ -2129,6 +2205,139 @@ void MainFrame::updateFreqBoxTooltip_()
     }
 
     m_cboReportFrequency->SetToolTip(wxString::Format(_("%s SSB dial"), dialFreqString));
+}
+
+// The frequency typed or shown in the box as the predefined list shows it
+// (rounded to 100 Hz, as it's used), or empty if it isn't a frequency.
+wxString MainFrame::reportFrequencyListString_(wxString const& text)
+{
+    double value = 0;
+    if (!wxNumberFormatter::FromString(text, &value) || value <= 0)
+    {
+        return wxEmptyString;
+    }
+
+    bool asKhz = wxGetApp().appConfiguration.reportingConfiguration.reportingFrequencyAsKhz;
+    uint64_t hz = round(value * (asKhz ? 1000.0 : 1000.0 * 1000.0));
+    hz = (hz + 50) / 100 * 100;
+    if (hz == 0)
+    {
+        return wxEmptyString;
+    }
+    return asKhz ? wxNumberFormatter::ToString(hz / 1000.0, 1) : wxNumberFormatter::ToString(hz / 1000.0 / 1000.0, 4);
+}
+
+// Adds a frequency (as reportFrequencyListString_() gives it) to the
+// predefined list in its place in ascending order, and saves the list.
+void MainFrame::addReportFrequencyToList_(wxString const& freq)
+{
+    double value = 0;
+    wxNumberFormatter::FromString(freq, &value);
+
+    auto list = wxGetApp().appConfiguration.reportingConfiguration.reportingFrequencyListCentred.get();
+    if (std::find(list.begin(), list.end(), freq) != list.end())
+    {
+        return;
+    }
+    size_t index = ReportingConfiguration::SortedFrequencyIndex(list, value);
+    list.insert(list.begin() + index, freq);
+    wxGetApp().appConfiguration.reportingConfiguration.reportingFrequencyListCentred = list;
+    wxGetApp().appConfiguration.save(pConfig);
+
+    m_reportFrequencyList->Insert(freq, index);
+}
+
+// Right-click on the frequency box: add what's in it to the predefined
+// list. The entry's own menu is replaced, so its editing items are here too.
+void MainFrame::OnReportFrequencyContextMenu(wxContextMenuEvent&)
+{
+    if (!m_cboReportFrequency->IsEnabled())
+    {
+        return;
+    }
+
+    wxString freq = reportFrequencyListString_(m_cboReportFrequency->GetValue());
+    auto const& list = wxGetApp().appConfiguration.reportingConfiguration.reportingFrequencyListCentred.get();
+    bool listed = std::find(list.begin(), list.end(), freq) != list.end();
+    wxString units = wxGetApp().appConfiguration.reportingConfiguration.reportingFrequencyAsKhz ? _("kHz") : _("MHz");
+
+    wxMenu menu;
+    wxMenuItem* addItem = menu.Append(wxID_ANY,
+        freq.IsEmpty() ? _("&Add frequency to list") : wxString::Format(_("&Add %s%s to list"), freq, units));
+    addItem->Enable(!freq.IsEmpty() && !listed);
+    menu.Bind(wxEVT_MENU, [this, freq](wxCommandEvent&) { addReportFrequencyToList_(freq); }, addItem->GetId());
+
+    wxTextCtrl* text = m_cboReportFrequency->GetTextCtrl();
+    menu.AppendSeparator();
+    menu.Append(wxID_CUT, _("&Cut"))->Enable(text->CanCut());
+    menu.Append(wxID_COPY, _("C&opy"))->Enable(text->CanCopy());
+    menu.Append(wxID_PASTE, _("&Paste"))->Enable(text->CanPaste());
+    menu.Bind(wxEVT_MENU, [text](wxCommandEvent&) { text->Cut(); }, wxID_CUT);
+    menu.Bind(wxEVT_MENU, [text](wxCommandEvent&) { text->Copy(); }, wxID_COPY);
+    menu.Bind(wxEVT_MENU, [text](wxCommandEvent&) { text->Paste(); }, wxID_PASTE);
+
+    ShowPopupMenu(m_cboReportFrequency, &menu);
+}
+
+// Right-click on a frequency in the open list: delete it. The list closes
+// for the menu, so open it again afterwards where it was, ready for the
+// next one.
+void MainFrame::OnReportFrequencyItemMenu(int item)
+{
+    if (item < 0 || (unsigned)item >= m_reportFrequencyList->GetCount())
+    {
+        return;
+    }
+
+    wxString units = wxGetApp().appConfiguration.reportingConfiguration.reportingFrequencyAsKhz ? _("kHz") : _("MHz");
+#if wxCHECK_VERSION(3, 1, 0)
+    int top = m_reportFrequencyList->GetTopItem();
+#else
+    // GetTopItem() needs wxWidgets 3.1+; without it the list reopens at the top.
+    int top = wxNOT_FOUND;
+#endif // wxCHECK_VERSION(3, 1, 0)
+
+    wxMenu menu;
+    wxMenuItem* deleteItem = menu.Append(wxID_ANY,
+        wxString::Format(_("&Delete %s%s from list"), m_reportFrequencyList->GetString(item), units));
+    menu.Bind(wxEVT_MENU, [this, item, top](wxCommandEvent&) {
+        OnReportFrequencyItemDelete(item);
+        CallAfter([this, top]() {
+            if (m_reportFrequencyList->GetCount() == 0)
+            {
+                return;
+            }
+            m_cboReportFrequency->Popup();
+            if (top != wxNOT_FOUND)
+            {
+                m_reportFrequencyList->SetFirstItem(std::min(top, (int)m_reportFrequencyList->GetCount() - 1));
+            }
+        });
+    }, deleteItem->GetId());
+
+    ShowPopupMenu(m_cboReportFrequency, &menu);
+}
+
+// Deletes a frequency from the predefined list (Del on it in the open list,
+// or its right-click menu), and saves the list.
+void MainFrame::OnReportFrequencyItemDelete(int item)
+{
+    if (item < 0 || (unsigned)item >= m_reportFrequencyList->GetCount())
+    {
+        return;
+    }
+
+    wxString freq = m_reportFrequencyList->GetString(item);
+    auto list = wxGetApp().appConfiguration.reportingConfiguration.reportingFrequencyListCentred.get();
+    auto it = std::find(list.begin(), list.end(), freq);
+    if (it != list.end())
+    {
+        list.erase(it);
+        wxGetApp().appConfiguration.reportingConfiguration.reportingFrequencyListCentred = list;
+        wxGetApp().appConfiguration.save(pConfig);
+    }
+
+    m_reportFrequencyList->Delete(item);
 }
 
 void MainFrame::updateReportingFreqList_()
@@ -2150,18 +2359,14 @@ void MainFrame::updateReportingFreqList_()
     {
         prevSelected = wxNumberFormatter::ToString(freq, 4);
     }
-    m_cboReportFrequency->Clear();
-    
+    m_reportFrequencyList->Clear();
+
     for (auto& item : wxGetApp().appConfiguration.reportingConfiguration.reportingFrequencyListCentred.get())
     {
-        m_cboReportFrequency->Append(item);
+        m_reportFrequencyList->Append(item);
     }
-    
-    auto idx = m_cboReportFrequency->FindString(prevSelected);
-    if (idx >= 0)
-    {
-        m_cboReportFrequency->SetSelection(idx);
-    }
+
+    m_reportFrequencyList->SetStringValue(prevSelected);
     m_cboReportFrequency->SetValue(prevSelected);
 
     // Update associated label if the units/mode have changed
@@ -2171,16 +2376,8 @@ void MainFrame::updateReportingFreqList_()
 void MainFrame::OnResetMicSpkrLevel(wxMouseEvent&)
 {
     auto sliderLevel = 0;
-    if (g_tx.load(std::memory_order_acquire))
-    {
-        wxGetApp().appConfiguration.filterConfiguration.micInChannel.volInDB = sliderLevel;
-        m_newMicInFilter = true;
-    }
-    else
-    {
-        wxGetApp().appConfiguration.filterConfiguration.spkOutChannel.volInDB = sliderLevel;
-        m_newSpkOutFilter = true;
-    }
+    wxGetApp().appConfiguration.filterConfiguration.spkOutChannel.volInDB = sliderLevel;
+    m_newSpkOutFilter.store(true, std::memory_order_release);
     
     wxString fmtString = wxString::Format(MIC_SPKR_LEVEL_FORMAT_STR, wxNumberFormatter::ToString((double)sliderLevel, 1), DECIBEL_STR);
     m_txtMicSpkrLevelNum->SetLabel(fmtString);
@@ -2189,7 +2386,7 @@ void MainFrame::OnResetMicSpkrLevel(wxMouseEvent&)
 
 void MainFrame::OnToggleReporterVisibility (wxCommandEvent&)
 {
-    if (m_RxRunning && !g_analog && wxGetApp().appConfiguration.reportingConfiguration.freedvReporterEnabled)
+    if (m_RxRunning.load(std::memory_order_acquire) && !g_analog.load(std::memory_order_relaxed) && wxGetApp().appConfiguration.reportingConfiguration.freedvReporterEnabled)
     {
         if (m_reporterHidden->GetValue())
         {
@@ -2203,11 +2400,11 @@ void MainFrame::OnToggleReporterVisibility (wxCommandEvent&)
 
     if (m_reporterHidden->GetValue())
     {
-        m_reporterHidden->SetLabel("Turn On");
+        m_reporterHidden->SetLabel(_("Turn On"));
     }
     else
     {
-        m_reporterHidden->SetLabel("Turn Off");
+        m_reporterHidden->SetLabel(_("Turn Off"));
     }
     
     wxGetApp().appConfiguration.reportingConfiguration.freedvReporterForcedOff = m_reporterHidden->GetValue();
@@ -2215,12 +2412,12 @@ void MainFrame::OnToggleReporterVisibility (wxCommandEvent&)
 
 void MainFrame::OnToolsExportConfigUI(wxUpdateUIEvent& event)
 {
-    event.Enable(!m_RxRunning);
+    event.Enable(!m_RxRunning.load(std::memory_order_acquire));
 }
 
 void MainFrame::OnToolsImportConfigUI(wxUpdateUIEvent& event)
 {
-    event.Enable(!m_RxRunning);
+    event.Enable(!m_RxRunning.load(std::memory_order_acquire));
 }
 
 void MainFrame::OnToolsExportConfig(wxCommandEvent& event)
@@ -2232,14 +2429,14 @@ void MainFrame::OnToolsExportConfig(wxCommandEvent& event)
         _("Export FreeDV Configuration"),
         wxGetApp().defaultConfigFilePath,
         wxEmptyString,
-        wxT("FreeDV configuration files (*.conf)|*.conf|All files (*.*)|*.*"),
+        _("FreeDV configuration files (*.conf)") + wxT("|*.conf|") + _("All files (*.*)") + wxT("|*.*"),
         wxFD_SAVE | wxFD_OVERWRITE_PROMPT
     );
 
-    if (saveFileDialog.ShowModal() == wxID_CANCEL)
+    wxString path;
+    if (ShowPathDialog(saveFileDialog, path) == wxID_CANCEL)
         return;
 
-    wxString path = saveFileDialog.GetPath();
     wxFileConfig* exportConfig = new wxFileConfig(wxT("FreeDV"), wxT("CODEC2-Project"), path, path, wxCONFIG_USE_LOCAL_FILE);
     exportConfiguration_(exportConfig);
     exportConfig->Flush();
@@ -2255,14 +2452,14 @@ void MainFrame::OnToolsImportConfig(wxCommandEvent& event)
         _("Import FreeDV Configuration"),
         wxGetApp().defaultConfigFilePath,
         wxEmptyString,
-        wxT("FreeDV configuration files (*.conf)|*.conf|All files (*.*)|*.*"),
+        _("FreeDV configuration files (*.conf)") + wxT("|*.conf|") + _("All files (*.*)") + wxT("|*.*"),
         wxFD_OPEN | wxFD_FILE_MUST_EXIST
     );
 
-    if (openFileDialog.ShowModal() == wxID_CANCEL)
+    wxString path;
+    if (ShowPathDialog(openFileDialog, path) == wxID_CANCEL)
         return;
 
-    wxString path = openFileDialog.GetPath();
 
     if (!wxFileExists(path))
     {
@@ -2283,13 +2480,13 @@ void MainFrame::OnToolsImportConfig(wxCommandEvent& event)
     wxFileName fn(path);
     wxGetApp().customConfigFileName = fn.GetFullName();
 
-    SetTitle(wxString::Format("%s (%s)", _("FreeDV ") + wxString::FromUTF8(GetFreeDVVersion().c_str()), wxGetApp().customConfigFileName));
+    SetTitle(wxString::Format("%s (%s)", wxT("FreeDV ") + wxString::FromUTF8(GetFreeDVVersion().c_str()), wxGetApp().customConfigFileName));
 #if defined(UNOFFICIAL_RELEASE)
     wxDateTime buildDate(wxInvalidDateTime);
     wxString::const_iterator iter;
     buildDate.ParseDate(FREEDV_BUILD_DATE, &iter);
     auto expireDate = buildDate + EXPIRES_AFTER_TIMEFRAME;
-    SetTitle(GetTitle() + wxString::Format(" [Expires %s]", expireDate.FormatDate()));
+    SetTitle(GetTitle() + wxString::Format(_(" [Expires %s]"), expireDate.FormatDate()));
 #endif // defined(UNOFFICIAL_RELEASE)
     setConfiguration_(importConfig);
 
@@ -2299,7 +2496,7 @@ void MainFrame::OnToolsImportConfig(wxCommandEvent& event)
 
 void MainFrame::OnToolsLoadDefaultConfigUI(wxUpdateUIEvent& event)
 {
-    event.Enable(!m_RxRunning);
+    event.Enable(!m_RxRunning.load(std::memory_order_acquire));
 }
 
 void MainFrame::OnToolsLoadDefaultConfig(wxCommandEvent& event)
@@ -2311,14 +2508,35 @@ void MainFrame::OnToolsLoadDefaultConfig(wxCommandEvent& event)
         _("Load Default Configuration"),
         wxYES_NO | wxICON_QUESTION | wxCENTRE);
 
-    if (messageDialog.ShowModal() != wxID_YES)
+    if (ShowMessageDialog(messageDialog) != wxID_YES)
         return;
 
-    // Create a platform-appropriate default config:
-    // On Windows this uses the registry (wxRegConfig); on macOS/Linux it
-    // uses the default file location (wxFileConfig).  This becomes the
-    // active pConfig going forward — no need to restore the old one.
-    wxConfigBase* defaultConfig = wxConfigBase::Create();
+    // The default configuration is platform-appropriate: on Windows it's in
+    // the registry (wxRegConfig); on macOS/Linux, a file in the default
+    // location (wxFileConfig). It becomes the active pConfig going forward.
+    //
+    // The default configuration is the one that was opened at startup, if
+    // it was (see MainApp::OnCmdLineParsed()). Finding it again from here
+    // isn't reliable: wxConfigBase::Create() just hands back whichever
+    // configuration is in use and, with that out of the way, looks under the
+    // application's name as it is now rather than as it was at startup.
+    wxConfigBase* defaultConfig = wxGetApp().defaultConfig;
+#if wxCHECK_VERSION(3,3,0) && defined(__linux__)
+    if (defaultConfig == nullptr && !wxGetApp().defaultConfigFile.IsEmpty())
+    {
+        // Startup would have had to say where the default configuration is,
+        // so the same goes here. That place was worked out then, as
+        // wxWidgets gives a different answer once it's been set up to use it.
+        wxString defaultLocation = wxGetApp().defaultConfigFile;
+        defaultConfig = new wxFileConfig(wxT("FreeDV"), wxT("CODEC2-Project"), defaultLocation, defaultLocation, wxCONFIG_USE_LOCAL_FILE | wxCONFIG_USE_SUBDIR | wxCONFIG_USE_XDG);
+    }
+#endif // wxCHECK_VERSION(3,3,0) && defined(__linux__)
+    if (defaultConfig == nullptr)
+    {
+        wxConfigBase::Set(nullptr);
+        defaultConfig = wxConfigBase::Create();
+    }
+    wxGetApp().defaultConfig = defaultConfig;
     
     setConfiguration_(defaultConfig);
 
@@ -2327,12 +2545,12 @@ void MainFrame::OnToolsLoadDefaultConfig(wxCommandEvent& event)
 
     // Clear any custom config file indicator from the title bar.
     wxGetApp().customConfigFileName = wxEmptyString;
-    SetTitle(_("FreeDV ") + wxString::FromUTF8(GetFreeDVVersion().c_str()));
+    SetTitle(wxT("FreeDV ") + wxString::FromUTF8(GetFreeDVVersion().c_str()));
 #if defined(UNOFFICIAL_RELEASE)
     wxDateTime buildDate(wxInvalidDateTime);
     wxString::const_iterator iter;
     buildDate.ParseDate(FREEDV_BUILD_DATE, &iter);
     auto expireDate = buildDate + EXPIRES_AFTER_TIMEFRAME;
-    SetTitle(GetTitle() + wxString::Format(" [Expires %s]", expireDate.FormatDate()));
+    SetTitle(GetTitle() + wxString::Format(_(" [Expires %s]"), expireDate.FormatDate()));
 #endif // defined(UNOFFICIAL_RELEASE)
 }

@@ -1,0 +1,53 @@
+name: 'Set up RADE Python environment'
+description: >
+  Creates a Python virtualenv and installs the torch/matplotlib packages
+  needed by the RADE PGO profiling and loss-sanity-check scripts.
+
+inputs:
+  venv-path:
+    description: 'Path (relative to working-directory) to create the venv at'
+    required: false
+    default: 'rade-venv'
+  working-directory:
+    description: 'Directory to create the venv in'
+    required: false
+    default: '.'
+  torch-index-url:
+    description: >
+      Optional --index-url passed to "pip install torch" (e.g. the
+      CPU-only wheel index used on Linux CI runners). Leave empty to
+      install torch from the default index (used on macOS).
+    required: false
+    default: ''
+  python-version:
+    description: >
+      Optional Python version to create the venv with (installed by
+      actions/setup-python), for runners whose own python3 is newer than
+      torch has packages for. Leave empty to use the runner's python3.
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - uses: actions/setup-python@v6
+      if: ${{ inputs['python-version'] != '' }}
+      with:
+        python-version: ${{ inputs['python-version'] }}
+
+    - name: Create Python venv
+      shell: bash
+      working-directory: ${{ inputs['working-directory'] }}
+      run: python3 -m venv ${{ inputs['venv-path'] }}
+
+    - name: Install Python required modules
+      shell: bash
+      working-directory: ${{ inputs['working-directory'] }}
+      run: |
+          . ./${{ inputs['venv-path'] }}/bin/activate
+          if [ -n "${{ inputs['torch-index-url'] }}" ]; then
+            pip3 install torch --index-url "${{ inputs['torch-index-url'] }}"
+          else
+            pip3 install torch
+          fi
+          pip3 install matplotlib

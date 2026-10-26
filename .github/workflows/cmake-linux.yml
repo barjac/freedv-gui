@@ -1,15 +1,49 @@
 name: Build FreeDV (Linux)
 
 on:
+  # Run on the result of merging the pull request, rather than on its branch,
+  # so that what's already been merged into its base is tested too.
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths-ignore:
+    - "**.md"
+    - "**/README"
+  # Merges, in effect.
   push:
-    branches-ignore:
-    - 'dr-render-manual'
+    branches:
+    - master
+    - 'v*-dev'
+    paths-ignore:
+    - "**.md"
+    - "**/README"
+  # "Run workflow", for a branch without a pull request, for instance.
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: 'Which jobs to run (see "scope")'
+        type: choice
+        options: [full, pr]
+        default: full
 
+# A newer push to a pull request cancels the run for the one before. Merges
+# aren't cancelled, so that each gets a full set of results. Adding a label
+# other than full-ci runs nothing (see "scope"), so that gets a group of its
+# own rather than cancelling the run already under way.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ (github.event.action == 'labeled' && github.event.label.name != 'full-ci') && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
     
 env:
+  # ccache skips compiles that use precompiled headers (wxWidgets and
+  # FreeDV's GUI targets) unless these are set.
+  CCACHE_SLOPPINESS: pch_defines,time_macros
+
+  # What's cached is uploaded again after every run and counts towards the
+  # repository's 10 GB of Actions caches, so trade some time on a cache miss
+  # (ccache's default is zstd level 1) for smaller caches. Reading a cached
+  # result isn't slowed down by this.
+  CCACHE_COMPRESSLEVEL: 10
+
   # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
   BUILD_TYPE: RelWithDebInfo
 
@@ -21,21 +55,48 @@ env:
   LLVM_POOL: https://apt.llvm.org/jammy/pool/main/l/llvm-toolchain-21/
 
 jobs:
+  # Which jobs to run ("tier"):
+  #
+  # - full: everything, including PGO builds, every sanitizer, the other
+  #   distributions, OS versions and architectures, and signing (given the
+  #   secrets). For merges to master and the v*-dev branches, pull requests
+  #   labelled "full-ci", and "Run workflow" unless told otherwise.
+  # - pr: lint, plain unsigned packages to try out, and the unit and GUI tests
+  #   in one configuration per platform (plus one with ASan and UBSan on
+  #   Linux). Enough to catch most problems in under an hour without holding
+  #   up everything else. For every other pull request.
+  # - none: a label other than full-ci was added, which needs no new run.
+  scope:
+    runs-on: ubuntu-slim
+    outputs:
+      tier: ${{ steps.scope.outputs.tier }}
+    steps:
+    - id: scope
+      env:
+        TIER: ${{ (github.event.action == 'labeled' && github.event.label.name != 'full-ci') && 'none' || (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.tier != 'pr') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'full' || 'pr' }}
+      run: echo "tier=$TIER" >> "$GITHUB_OUTPUT"
+
   lint:
-    runs-on: ubuntu-24.04
+    needs: [scope]
+    if: ${{ needs.scope.outputs.tier != 'none' }}
+    runs-on: ubuntu-26.04
     steps:
     - uses: actions/checkout@v6
 
+    # (No ccache here or in test-application below: they use the system's
+    # wxWidgets and OpenSSL, so there's little to cache, and what there is
+    # would crowd the caches of the builds that compile those out of the
+    # repository's 10 GB.)
     - name: Install required packages
       shell: bash
       run: |
            sudo sed -i 's@http://ports.ubuntu.com/ubuntu-ports@http://mirrors.mit.edu/ubuntu-ports@g' /etc/apt/sources.list
            sudo apt-get update
-           sudo apt-get install codespell libpulse-dev libspeexdsp-dev sox git portaudio19-dev libhamlib-dev libasound2-dev libao-dev libgsm1-dev libsndfile-dev xvfb at-spi2-core libebur128-dev libwxgtk3.2-dev python3-numpy python3-numpy-dev python3-dev libssl-dev
+           sudo apt-get install codespell libpulse-dev libspeexdsp-dev sox git portaudio19-dev libhamlib-dev libasound2-dev libao-dev libgsm1-dev libsndfile-dev xvfb at-spi2-core libebur128-dev libwxgtk3.2-dev python3-numpy python3-numpy-dev python3-dev libssl-dev gettext
 
     - name: Spellcheck codebase
       shell: bash
-      run: codespell --ignore-words-list=numer,caf,radae,rade,inout,nin,ontop,parm,tthe,ue `find src -name '*.c*' -o -name '*.h' | grep -v 3rdparty`
+      run: codespell --ignore-words-list=floatIn,numer,caf,radae,rade,inout,nin,ontop,parm,tthe,ue `find src -name '*.c*' -o -name '*.h' | grep -v 3rdparty`
 
     - name: Install LLVM/Clang >=20.0 (Required for clang-tidy)
       run: |
@@ -47,7 +108,9 @@ jobs:
       run: |
         mkdir build_linux
         cd build_linux
-        cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=1 ..
+        # PCH is disabled because clang-tidy can't read the GCC-built .gch
+        # files that compile_commands.json would otherwise reference.
+        cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=1 -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON ..
         # Build so we have all required .h and .c/.cpp files
         make -j$(nproc)
 
@@ -57,6 +120,8 @@ jobs:
         run-clang-tidy-21 -p .
 
   build-appimage:
+    needs: [scope]
+    if: ${{ needs.scope.outputs.tier != 'none' }}
     #needs: lint
     env:
       FREEDV_LINUX_CODE_SIGNING_KEY_ID: ${{ secrets.FREEDV_LINUX_CODE_SIGNING_KEY_ID }}
@@ -75,71 +140,56 @@ jobs:
     steps:
     - uses: actions/checkout@v6
 
-    - name: Install LLVM/Clang >=20.0 
-      run: |
-        set -euxo pipefail
+    - name: ccache
+      uses: hendrikmuhs/ccache-action@v1.2.23
+      if: ${{ matrix.os == 'ubuntu-22.04-arm' }}
+      with:
+        key: ${{ github.job }}-aarch64
+        max-size: "1G"
 
-        # Install the newest version that actually exists in the pool.
-        # We derive the exact version string from one known package filename.
-        HTML="$(curl -fsSL --compressed "$LLVM_POOL")"
-        VER="$(grep -oE 'libllvm21_[0-9][^"]+_${{ env.LLVM_ARCH }}\.deb' <<<"$HTML" | head -n1 \
-          | sed -E 's/^libllvm21_//; s/_${{ env.LLVM_ARCH }}\.deb$//')"
-        echo "Using pool version: $VER"
+    - name: ccache
+      uses: hendrikmuhs/ccache-action@v1.2.23
+      if: ${{ matrix.os == 'ubuntu-22.04' }}
+      with:
+        key: ${{ github.job }}-x86_64
+        max-size: "1G"
 
-        mkdir -p /tmp/llvm21 && cd /tmp/llvm21
-
-        fetch() {
-          local pkg="$1"
-          local file="${pkg}_${VER}_${{ env.LLVM_ARCH }}.deb"
-          curl -fsSLO "${LLVM_POOL}${file}"
-        }
-
-        for pkg in \
-          clang-21 clang-tools-21 lld-21 \
-          libllvm21 libclang-cpp21 libclang-common-21-dev libclang1-21 libclang-rt-21-dev \
-          llvm-21 llvm-21-dev llvm-21-linker-tools llvm-21-runtime llvm-21-tools 
-        do
-          fetch "$pkg"
-        done
-
-        # Install the downloaded LLVM debs. apt will resolve any non-LLVM deps from Ubuntu repos.
-        sudo apt-get install -y --no-install-recommends ./*.deb
+    - uses: ./.github/actions/install-llvm-apt-pool
+      with:
+        arch: ${{ env.LLVM_ARCH }}
         
-    - name: Install rtkit for RT threading
-      shell: bash
-      run: |
-           sudo sed -i 's@http://ports.ubuntu.com/ubuntu-ports@http://mirrors.mit.edu/ubuntu-ports@g' /etc/apt/sources.list
-           sudo apt-get update
-           sudo apt-get install dbus-x11 rtkit libdbus-1-dev polkitd
-           sudo sed -i 's/no/yes/g' /usr/share/polkit-1/actions/org.freedesktop.RealtimeKit1.policy 
-           sudo systemctl restart polkit
+    - uses: ./.github/actions/setup-rtkit-linux
            
     - name: Install required packages
       shell: bash
       run: |
-           sudo apt-get install libpulse-dev sox git libasound2-dev libao-dev libgsm1-dev xvfb pulseaudio pulseaudio-utils metacity at-spi2-core libdbus-1-dev libgtk-3-dev python3 python3-dev python3-venv libebur128-dev pkg-config
-           mkdir -p ~/.config/pulse
-           echo "default-sample-rate = 48000" >~/.config/pulse/daemon.conf
-           sudo sed 's/load-module module-suspend-on-idle/#load-module module-suspend-on-idle/' /etc/pulse/default.pa -i
-           systemctl --user --now enable pulseaudio.service pulseaudio.socket
+           sudo apt-get install libpulse-dev sox git libasound2-dev libao-dev libgsm1-dev xvfb pulseaudio pulseaudio-utils metacity at-spi2-core libdbus-1-dev libgtk-3-dev python3 python3-dev python3-venv libebur128-dev pkg-config gettext
 
-    - name: Install Python required modules
+    - uses: ./.github/actions/setup-pulseaudio-legacy
+
+    - uses: ./.github/actions/setup-rade-python-env
+      if: ${{ needs.scope.outputs.tier == 'full' }}
+      with:
+        torch-index-url: https://download.pytorch.org/whl/cpu
+
+    # Not on a merge: a plain build, to try out.
+    - name: Build freedv-gui
+      if: ${{ needs.scope.outputs.tier == 'pr' }}
       shell: bash
       working-directory: ${{github.workspace}}
       run: |
-          python3 -m venv rade-venv
-          . ./rade-venv/bin/activate
-          pip3 install torch --index-url https://download.pytorch.org/whl/cpu
-          pip3 install matplotlib
+          BUILD_TYPE=Release CC=clang-21 CXX=clang++-21 USE_CCACHE=1 STATIC_LIBGCC=1 ./build_linux.sh
 
     - name: Build instrumented freedv-gui 
+      if: ${{ needs.scope.outputs.tier == 'full' }}
       shell: bash
       working-directory: ${{github.workspace}}
       run: |
           . ./rade-venv/bin/activate
-          BUILD_TYPE=Release CC=clang-21 CXX=clang++-21 PGO_INSTRUMENT=1 ENABLE_LTO=1 STATIC_LIBGCC=1 ./build_linux.sh 
+          BUILD_TYPE=Release CC=clang-21 CXX=clang++-21 USE_CCACHE=1 PGO_INSTRUMENT=1 ENABLE_LTO=1 STATIC_LIBGCC=1 ./build_linux.sh 
 
     - name: Generate optimization profile
+      if: ${{ needs.scope.outputs.tier == 'full' }}
       shell: bash
       working-directory: ${{github.workspace}}
       run: |
@@ -160,6 +210,7 @@ jobs:
           llvm-profdata-21 merge -output ${{ github.workspace }}/code.profdata code-*.profraw
 
     - name: Build PGO optimized freedv-gui 
+      if: ${{ needs.scope.outputs.tier == 'full' }}
       shell: bash
       working-directory: ${{github.workspace}}
       run: |
@@ -168,7 +219,7 @@ jobs:
           BUILD_TYPE=Release CC=clang-21 CXX=clang++-21 PGO_USE_PROFILE=${{github.workspace}}/code.profdata ENABLE_LTO=1 STATIC_LIBGCC=1 ./build_linux.sh 
 
     - name: Initialize GPG keys
-      if: ${{ env.FREEDV_LINUX_CODE_SIGNING_KEY != '' }}
+      if: ${{ env.FREEDV_LINUX_CODE_SIGNING_KEY != '' && needs.scope.outputs.tier == 'full' }}
       env:
         FREEDV_LINUX_CODE_SIGNING_KEY: ${{ secrets.FREEDV_LINUX_CODE_SIGNING_KEY }}
         FREEDV_LINUX_CODE_SIGNING_PUBLIC_KEY: ${{ secrets.FREEDV_LINUX_CODE_SIGNING_PUBLIC_KEY }}
@@ -183,14 +234,14 @@ jobs:
         gpg --import tmp_private.pem
 
     - name: Build AppImage (unsigned)
-      if: ${{ env.FREEDV_LINUX_CODE_SIGNING_KEY_ID == '' }}
+      if: ${{ env.FREEDV_LINUX_CODE_SIGNING_KEY_ID == '' || needs.scope.outputs.tier == 'pr' }}
       shell: bash
       working-directory: ${{github.workspace}}/appimage
       run: |
           ./make-appimage.sh
 
     - name: Build AppImage (signed)
-      if: ${{ env.FREEDV_LINUX_CODE_SIGNING_KEY_ID != '' }}
+      if: ${{ env.FREEDV_LINUX_CODE_SIGNING_KEY_ID != '' && needs.scope.outputs.tier == 'full' }}
       shell: bash
       working-directory: ${{github.workspace}}/appimage
       run: |
@@ -214,11 +265,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04]
+        os: [ubuntu-26.04]
         fedora-version: [42, 43]
 
     runs-on: ${{ matrix.os }}
-    needs: [build-appimage]
+    needs: [build-appimage, scope]
+    if: ${{ needs.scope.outputs.tier == 'full' }}
     steps:
     - uses: actions/checkout@v6
 
@@ -284,10 +336,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-22.04, ubuntu-22.04-arm, ubuntu-24.04-arm]
+        os: [ubuntu-26.04, ubuntu-24.04, ubuntu-22.04, ubuntu-22.04-arm, ubuntu-24.04-arm, ubuntu-26.04-arm]
 
     runs-on: ${{ matrix.os }}
-    needs: [build-appimage]
+    needs: [build-appimage, scope]
+    if: ${{ needs.scope.outputs.tier == 'full' }}
     steps:
     - uses: actions/checkout@v6
 
@@ -307,14 +360,7 @@ jobs:
         pattern: FreeDV-*-${{ steps.save-arch.outputs.APPIMAGE_ARCH }}.AppImage
         path: ${{github.workspace}}
         
-    - name: Install rtkit for RT threading
-      shell: bash
-      run: |
-           sudo sed -i 's@http://ports.ubuntu.com/ubuntu-ports@http://mirrors.mit.edu/ubuntu-ports@g' /etc/apt/sources.list
-           sudo apt-get update
-           sudo apt-get install dbus-x11 rtkit libdbus-1-dev polkitd
-           sudo sed -i 's/no/yes/g' /usr/share/polkit-1/actions/org.freedesktop.RealtimeKit1.policy 
-           sudo systemctl restart polkit
+    - uses: ./.github/actions/setup-rtkit-linux
 
     - name: Install common packages
       shell: bash
@@ -323,86 +369,42 @@ jobs:
 
     - name: Install required packages for audio/display
       shell: bash
-      if: ${{ matrix.os == 'ubuntu-24.04' || matrix.os == 'ubuntu-24.04-arm' }}
+      if: ${{ matrix.os != 'ubuntu-22.04' && matrix.os != 'ubuntu-22.04-arm' }}
       run: |
            sudo apt-get install pipewire pulseaudio-utils pipewire-pulse wireplumber metacity
 
-    - name: Install required packages for audio/display
-      shell: bash
+    - uses: ./.github/actions/setup-pulseaudio-legacy
       if: ${{ matrix.os == 'ubuntu-22.04' || matrix.os == 'ubuntu-22.04-arm' }}
-      run: |
-           mkdir -p ~/.config/pulse
-           echo "default-sample-rate = 48000" >~/.config/pulse/daemon.conf
-           sudo apt-get install pulseaudio pulseaudio-utils metacity
-           sudo sed 's/load-module module-suspend-on-idle/#load-module module-suspend-on-idle/' /etc/pulse/default.pa -i
-           systemctl --user --now enable pulseaudio.service pulseaudio.socket
+      with:
+        packages: pulseaudio pulseaudio-utils metacity
 
-    - name: Create Python venv
-      shell: bash
-      working-directory: ${{github.workspace}}
-      run: |
-          python3 -m venv rade-venv 
+    - uses: ./.github/actions/setup-rade-python-env
+      with:
+        torch-index-url: https://download.pytorch.org/whl/cpu
 
-    - name: Install Python required modules
-      shell: bash
-      working-directory: ${{github.workspace}}
-      run: |
-          . ./rade-venv/bin/activate
-          pip3 install torch --index-url https://download.pytorch.org/whl/cpu
-          pip3 install matplotlib
+    - uses: ./.github/actions/run-linux-gui-test
+      with:
+        audio-backend: ${{ (matrix.os == 'ubuntu-22.04' || matrix.os == 'ubuntu-22.04-arm') && 'pulseaudio' || 'pipewire' }}
 
     - name: Sanity check RADE
       shell: bash
       working-directory: ${{github.workspace}}
-      if: ${{ matrix.os == 'ubuntu-22.04' || matrix.os == 'ubuntu-22.04-arm' }}
       run: |
-          sudo systemctl enable rtkit-daemon
-          sudo systemctl start rtkit-daemon
-          Xvfb :99 -screen 0 1024x768x16 &
-          sleep 5
-          export DISPLAY=:99.0
-          export XDG_RUNTIME_DIR=/run/user/$(id -u)
-          mkdir -p $XDG_RUNTIME_DIR
-          chmod 700 $XDG_RUNTIME_DIR
-          eval "$(dbus-launch --sh-syntax --exit-with-x11)"
-          metacity --sm-disable --replace &
-          sleep 5
           . ./rade-venv/bin/activate
-          chmod +x *.AppImage 
+          chmod +x *.AppImage
           FREEDV_BINARY=./$(echo -n *.AppImage) ./test/test_rade_loss.sh 2>&1 | tee tmp.log
           grep "PASS" tmp.log
 
-    - name: Sanity check RADE
-      shell: bash
-      working-directory: ${{github.workspace}}
-      if: ${{ matrix.os == 'ubuntu-24.04' || matrix.os == 'ubuntu-24.04-arm' }}
-      run: |
-          sudo systemctl enable rtkit-daemon
-          sudo systemctl start rtkit-daemon
-          Xvfb :99 -screen 0 1024x768x16 &
-          sleep 5
-          export DISPLAY=:99.0
-          export XDG_RUNTIME_DIR=/run/user/$(id -u)
-          mkdir -p $XDG_RUNTIME_DIR
-          chmod 700 $XDG_RUNTIME_DIR
-          eval "$(dbus-launch --sh-syntax --exit-with-x11)"
-          systemctl --user enable --now pipewire-pulse.socket
-          systemctl --user enable --now pipewire.service
-          systemctl --user enable --now wireplumber.service
-          metacity --sm-disable --replace &
-          sleep 5
-          . ./rade-venv/bin/activate
-          chmod +x *.AppImage 
-          FREEDV_BINARY=./$(echo -n *.AppImage) ./test/test_rade_loss.sh 2>&1 | tee tmp.log
-          grep "PASS" tmp.log
-
+  # On a pull request (the "pr" tier), only ubuntu-26.04 with native audio,
+  # once plain and once with ASan and UBSan together (which, unlike TSan and
+  # RTSan, can share a build).
   test-application:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-22.04, ubuntu-24.04-arm, ubuntu-22.04-arm]
-        sanitizer: [WITH_ASAN=0, WITH_RTSAN=1, WITH_ASAN=1, WITH_TSAN=1, WITH_UBSAN=1]
-        native-audio: [USE_NATIVE_AUDIO=0, USE_NATIVE_AUDIO=1]
+        os: ${{ fromJSON(needs.scope.outputs.tier == 'full' && '["ubuntu-26.04", "ubuntu-24.04", "ubuntu-22.04", "ubuntu-26.04-arm", "ubuntu-24.04-arm", "ubuntu-22.04-arm"]' || '["ubuntu-26.04"]') }}
+        sanitizer: ${{ fromJSON(needs.scope.outputs.tier == 'full' && '["WITH_ASAN=0", "WITH_RTSAN=1", "WITH_ASAN=1", "WITH_TSAN=1", "WITH_UBSAN=1"]' || '["WITH_ASAN=0", "WITH_ASAN=1 WITH_UBSAN=1"]') }}
+        native-audio: ${{ fromJSON(needs.scope.outputs.tier == 'full' && '["USE_NATIVE_AUDIO=0", "USE_NATIVE_AUDIO=1"]' || '["USE_NATIVE_AUDIO=1"]') }}
         exclude:
         - sanitizer: WITH_RTSAN=1
           native-audio: USE_NATIVE_AUDIO=0
@@ -412,6 +414,22 @@ jobs:
           native-audio: USE_NATIVE_AUDIO=0
         - sanitizer: WITH_UBSAN=1
           native-audio: USE_NATIVE_AUDIO=0
+        - os: ubuntu-24.04
+          sanitizer: WITH_RTSAN=1
+        - os: ubuntu-24.04
+          sanitizer: WITH_TSAN=1
+        - os: ubuntu-24.04
+          sanitizer: WITH_ASAN=1
+        - os: ubuntu-24.04
+          sanitizer: WITH_UBSAN=1
+        - os: ubuntu-24.04-arm
+          sanitizer: WITH_RTSAN=1
+        - os: ubuntu-24.04-arm
+          sanitizer: WITH_TSAN=1
+        - os: ubuntu-24.04-arm
+          sanitizer: WITH_ASAN=1
+        - os: ubuntu-24.04-arm
+          sanitizer: WITH_UBSAN=1
         - os: ubuntu-22.04
           sanitizer: WITH_RTSAN=1
         - os: ubuntu-22.04
@@ -430,10 +448,11 @@ jobs:
           sanitizer: WITH_UBSAN=1
 
     runs-on: ${{ matrix.os }}
-    needs: lint
+    needs: [scope]
+    if: ${{ needs.scope.outputs.tier != 'none' }}
 
     env:
-      LLVM_ARCH: ${{ matrix.os == 'ubuntu-22.04-arm' && 'arm64' || 'amd64' }}
+      LLVM_ARCH: ${{ (matrix.os == 'ubuntu-22.04-arm' || matrix.os == 'ubuntu-24.04-arm') && 'arm64' || 'amd64' }}
 
     steps:
     - uses: actions/checkout@v6
@@ -451,79 +470,34 @@ jobs:
         chmod +x llvm.sh
         sudo ./llvm.sh 21
 
-    - name: Install LLVM/Clang >=20.0
+    - uses: ./.github/actions/install-llvm-apt-pool
       if: ${{ matrix.os == 'ubuntu-22.04' || matrix.os == 'ubuntu-22.04-arm' }}
-      run: |
-        set -euxo pipefail
+      with:
+        arch: ${{ env.LLVM_ARCH }}
 
-        # Install the newest version that actually exists in the pool.
-        # We derive the exact version string from one known package filename.
-        HTML="$(curl -fsSL --compressed "$LLVM_POOL")"
-        VER="$(grep -oE 'libllvm21_[0-9][^"]+_${{ env.LLVM_ARCH }}\.deb' <<<"$HTML" | head -n1 \
-          | sed -E 's/^libllvm21_//; s/_${{ env.LLVM_ARCH }}\.deb$//')"
-        echo "Using pool version: $VER"
-
-        mkdir -p /tmp/llvm21 && cd /tmp/llvm21
-
-        fetch() {
-          local pkg="$1"
-          local file="${pkg}_${VER}_${{ env.LLVM_ARCH }}.deb"
-          curl -fsSLO "${LLVM_POOL}${file}"
-        }
-
-        for pkg in \
-          clang-21 clang-tools-21 lld-21 \
-          libllvm21 libclang-cpp21 libclang-common-21-dev libclang1-21 libclang-rt-21-dev \
-          llvm-21 llvm-21-dev llvm-21-linker-tools llvm-21-runtime llvm-21-tools
-        do
-          fetch "$pkg"
-        done
-
-        # Install the downloaded LLVM debs. apt will resolve any non-LLVM deps from Ubuntu repos.
-        sudo apt-get install -y --no-install-recommends ./*.deb
-
-    - name: Install rtkit for RT threading
-      shell: bash
-      run: |
-           sudo apt-get update
-           sudo apt-get install dbus-x11 rtkit libdbus-1-dev polkitd
-           sudo sed -i 's/no/yes/g' /usr/share/polkit-1/actions/org.freedesktop.RealtimeKit1.policy 
-           sudo systemctl restart polkit
+    - uses: ./.github/actions/setup-rtkit-linux
+      with:
+        fix-ports-mirror: 'false'
 
     - name: Install common packages
       shell: bash
       run: |
-           sudo apt-get install libpulse-dev libspeexdsp-dev sox git portaudio19-dev libhamlib-dev libasound2-dev libao-dev libgsm1-dev libsndfile-dev xvfb pulseaudio-utils metacity at-spi2-core libebur128-dev python3 python3-dev python3-venv
+           sudo apt-get install libpulse-dev libspeexdsp-dev sox git portaudio19-dev libhamlib-dev libasound2-dev libao-dev libgsm1-dev libsndfile-dev xvfb pulseaudio-utils metacity at-spi2-core libebur128-dev python3 python3-dev python3-venv gettext
 
-    - name: Install version-specific packages
+    - uses: ./.github/actions/setup-pulseaudio-legacy
       if: ${{ matrix.os == 'ubuntu-22.04' || matrix.os == 'ubuntu-22.04-arm' }}
-      shell: bash
-      run: |
-           mkdir -p ~/.config/pulse
-           echo "default-sample-rate = 48000" >~/.config/pulse/daemon.conf
-           sudo apt-get install libwxgtk3.0-gtk3-dev pulseaudio 
-           sudo sed 's/load-module module-suspend-on-idle/#load-module module-suspend-on-idle/' /etc/pulse/default.pa -i
-           systemctl --user --now enable pulseaudio.service pulseaudio.socket
+      with:
+        packages: libwxgtk3.0-gtk3-dev pulseaudio
 
     - name: Install version-specific packages
-      if: ${{ matrix.os == 'ubuntu-24.04' || matrix.os == 'ubuntu-24.04-arm' }}
+      if: ${{ matrix.os != 'ubuntu-22.04' && matrix.os != 'ubuntu-22.04-arm' }}
       shell: bash
       run: |
            sudo apt-get install libwxgtk3.2-dev pipewire pipewire-pulse wireplumber
 
-    - name: Create Python venv
-      shell: bash
-      working-directory: ${{github.workspace}}
-      run: |
-          python3 -m venv rade-venv 
-
-    - name: Install Python required modules
-      shell: bash
-      working-directory: ${{github.workspace}}
-      run: |
-          . ./rade-venv/bin/activate
-          pip3 install torch --index-url https://download.pytorch.org/whl/cpu
-          pip3 install matplotlib
+    - uses: ./.github/actions/setup-rade-python-env
+      with:
+        torch-index-url: https://download.pytorch.org/whl/cpu
 
     - name: Build freedv-gui 
       shell: bash
@@ -541,51 +515,18 @@ jobs:
           . ./rade-venv/bin/activate
           UT_ENABLE=1 CC=clang-21 CXX=clang++-21 ${{matrix.native-audio}} ${{matrix.sanitizer}} ./build_linux.sh 
 
-    - name: Execute unit tests
-      shell: bash
-      if: ${{ (matrix.os == 'ubuntu-22.04' || matrix.os == 'ubuntu-22.04-arm') && matrix.native-audio == 'USE_NATIVE_AUDIO=1' }}
-      working-directory: ${{github.workspace}}/build_linux
-      run: |
-          sudo systemctl enable rtkit-daemon
-          sudo systemctl start rtkit-daemon
-          Xvfb :99 -screen 0 1024x768x16 &
-          sleep 5
-          export DISPLAY=:99.0
-          export XDG_RUNTIME_DIR=/run/user/$(id -u)
-          mkdir -p $XDG_RUNTIME_DIR
-          chmod 700 $XDG_RUNTIME_DIR
-          eval "$(dbus-launch --sh-syntax --exit-with-x11)"
-          metacity --sm-disable --replace &
-          sleep 5
-          if [[ "${{ matrix.sanitizer }}" == "WITH_ASAN=0" ]]; then
-              export MAX_EXECUTION_TIMES=2
-          else
-              export MAX_EXECUTION_TIMES=1
-          fi
-          ln -s ${{github.workspace}}/build_linux/rade_src/model19_check3 model19_check3
-          . ../rade-venv/bin/activate
-          echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor || true
-          UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1:suppressions=${{github.workspace}}/test/ubsan_suppressions.txt ASAN_OPTIONS=suppressions=${{github.workspace}}/test/asan_suppressions.txt LSAN_OPTIONS=suppressions=${{github.workspace}}/test/lsan_suppressions.txt TSAN_OPTIONS=halt_on_error=1:ignore_noninstrumented_modules=1 PYTHONPATH=${{github.workspace}}/build_linux/rade_src:$PYTHONPATH ctest -V --repeat until-pass:$MAX_EXECUTION_TIMES
+    - uses: ./.github/actions/run-linux-gui-test
+      if: ${{ matrix.native-audio == 'USE_NATIVE_AUDIO=1' }}
+      with:
+        audio-backend: ${{ (matrix.os == 'ubuntu-22.04' || matrix.os == 'ubuntu-22.04-arm') && 'pulseaudio' || 'pipewire' }}
+        # The GUI tests (see below) need room for FreeDV's windows.
+        screen-geometry: ${{ matrix.os == 'ubuntu-26.04' && '1280x1024x24' || '1024x768x16' }}
 
     - name: Execute unit tests
       shell: bash
-      if: ${{ (matrix.os == 'ubuntu-24.04' || matrix.os == 'ubuntu-24.04-arm') && matrix.native-audio == 'USE_NATIVE_AUDIO=1' }}
+      if: ${{ matrix.native-audio == 'USE_NATIVE_AUDIO=1' }}
       working-directory: ${{github.workspace}}/build_linux
       run: |
-          sudo systemctl enable rtkit-daemon
-          sudo systemctl start rtkit-daemon
-          Xvfb :99 -screen 0 1024x768x16 &
-          sleep 5
-          export DISPLAY=:99.0
-          export XDG_RUNTIME_DIR=/run/user/$(id -u)
-          mkdir -p $XDG_RUNTIME_DIR
-          chmod 700 $XDG_RUNTIME_DIR
-          eval "$(dbus-launch --sh-syntax --exit-with-x11)"
-          systemctl --user enable --now pipewire-pulse.socket
-          systemctl --user enable --now pipewire.service
-          systemctl --user enable --now wireplumber.service
-          metacity --sm-disable --replace &
-          sleep 5
           if [[ "${{ matrix.sanitizer }}" == "WITH_ASAN=0" ]]; then
               export MAX_EXECUTION_TIMES=2
           else
@@ -594,6 +535,109 @@ jobs:
           ln -s ${{github.workspace}}/build_linux/rade_src/model19_check3 model19_check3
           . ../rade-venv/bin/activate
           echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor || true
-          UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1:suppressions=${{github.workspace}}/test/ubsan_suppressions.txt ASAN_OPTIONS=suppressions=${{github.workspace}}/test/asan_suppressions.txt LSAN_OPTIONS=suppressions=${{github.workspace}}/test/lsan_suppressions.txt TSAN_OPTIONS=halt_on_error=1:ignore_noninstrumented_modules=1 PYTHONPATH=${{github.workspace}}/build_linux/rade_src:$PYTHONPATH ctest -V --repeat until-pass:$MAX_EXECUTION_TIMES
+          UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1:suppressions=${{github.workspace}}/test/ubsan_suppressions.txt ASAN_OPTIONS=suppressions=${{github.workspace}}/test/asan_suppressions.txt LSAN_OPTIONS=suppressions=${{github.workspace}}/test/lsan_suppressions.txt TSAN_OPTIONS=halt_on_error=1:ignore_noninstrumented_modules=1 PYTHONPATH=${{github.workspace}}/build_linux/rade_src:$PYTHONPATH ctest -V -LE gui --repeat until-pass:$MAX_EXECUTION_TIMES
+
+    # Tests that drive FreeDV's user interface (see test/gui). Only on one
+    # version of Ubuntu for now, as they take a while. (All but the one that
+    # looks at who's on the public FreeDV Reporter server, which depends on
+    # who that is at the time.) On a pull request, only without sanitizers,
+    # which make them take longer still.
+    - name: Install what the GUI tests need
+      shell: bash
+      if: ${{ matrix.os == 'ubuntu-26.04' && matrix.native-audio == 'USE_NATIVE_AUDIO=1' && (needs.scope.outputs.tier == 'full' || matrix.sanitizer == 'WITH_ASAN=0') }}
+      working-directory: ${{github.workspace}}
+      run: |
+          # rigctld stands in for a radio, and eu-stack says where FreeDV is if it gets stuck.
+          sudo apt-get install libhamlib-utils elfutils
+          . ./rade-venv/bin/activate
+          # For running FreeDV Reporter's server locally.
+          pip install aiohttp python-socketio aiosqlite
+
+    - name: Execute GUI tests
+      shell: bash
+      if: ${{ matrix.os == 'ubuntu-26.04' && matrix.native-audio == 'USE_NATIVE_AUDIO=1' && (needs.scope.outputs.tier == 'full' || matrix.sanitizer == 'WITH_ASAN=0') }}
+      working-directory: ${{github.workspace}}/build_linux
+      run: |
+          if [[ "${{ matrix.sanitizer }}" == "WITH_ASAN=0" ]]; then
+              export MAX_EXECUTION_TIMES=2
+          else
+              export MAX_EXECUTION_TIMES=1
+          fi
+          . ../rade-venv/bin/activate
+          UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1:suppressions=${{github.workspace}}/test/ubsan_suppressions.txt ASAN_OPTIONS=suppressions=${{github.workspace}}/test/asan_suppressions.txt LSAN_OPTIONS=suppressions=${{github.workspace}}/test/lsan_suppressions.txt TSAN_OPTIONS=halt_on_error=1:ignore_noninstrumented_modules=1 ctest --output-on-failure -L gui -E gui_reporter_live_view --timeout 900 --repeat until-pass:$MAX_EXECUTION_TIMES
+
+  # Reports how much of the code the unit and GUI tests exercise.
+  coverage:
+    runs-on: ubuntu-26.04
+    needs: [scope]
+    if: ${{ needs.scope.outputs.tier == 'full' }}
+
+    steps:
+    - uses: actions/checkout@v6
+
+    # (No ccache, as in lint and test-application: this uses the system's
+    # wxWidgets and OpenSSL too.)
+    - uses: ./.github/actions/setup-rtkit-linux
+      with:
+        fix-ports-mirror: 'false'
+
+    - name: Install required packages
+      shell: bash
+      run: |
+           sudo apt-get install libpulse-dev libspeexdsp-dev sox git portaudio19-dev libhamlib-dev libhamlib-utils libasound2-dev libao-dev libgsm1-dev libsndfile-dev xvfb pulseaudio-utils metacity at-spi2-core libebur128-dev python3 python3-dev python3-venv gettext elfutils libwxgtk3.2-dev pipewire pipewire-pulse wireplumber
+
+    - uses: ./.github/actions/setup-rade-python-env
+      with:
+        torch-index-url: https://download.pytorch.org/whl/cpu
+
+    - name: Build freedv-gui
+      shell: bash
+      working-directory: ${{github.workspace}}
+      run: |
+          . ./rade-venv/bin/activate
+          pip install aiohttp python-socketio aiosqlite gcovr
+          # (Not optimised, so that what's reported matches the source.)
+          BUILD_TYPE=Debug UT_ENABLE=1 CC=gcc CXX=g++ WITH_COVERAGE=1 ./build_linux.sh
+
+    - uses: ./.github/actions/run-linux-gui-test
+      with:
+        audio-backend: pipewire
+        screen-geometry: 1280x1024x24
+
+    # Failures are for the test jobs to report; this one is only after what
+    # the tests execute.
+    - name: Execute unit and GUI tests
+      shell: bash
+      working-directory: ${{github.workspace}}/build_linux
+      run: |
+          ln -s ${{github.workspace}}/build_linux/rade_src/model19_check3 model19_check3
+          . ../rade-venv/bin/activate
+          PYTHONPATH=${{github.workspace}}/build_linux/rade_src:$PYTHONPATH ctest --output-on-failure -E gui_reporter_live_view --timeout 900 || echo "::warning::Some tests failed, so coverage may be understated"
+
+    - name: Report coverage
+      if: ${{ !cancelled() }}
+      shell: bash
+      working-directory: ${{github.workspace}}
+      run: |
+          . ./rade-venv/bin/activate
+          mkdir -p coverage-html
+          # Branches that the compiler adds, rather than ones in the code,
+          # aren't counted, as no test could take them: those for an exception
+          # being thrown part way through a line (nearly every line that
+          # touches a wxString has some), for cleaning up if a constructor
+          # throws ("new Something(...)"), and for an assert failing.
+          BRANCH_EXCLUSIONS='.*(\bnew\s+[A-Za-z_:<>]+\s*[\(\[\{;]|\bassert\s*\(|\bwxASSERT|\bwxCHECK|GCOVR?_EXCL_BR_LINE).*'
+          gcovr -j "$(nproc)" --root . --object-directory build_linux --filter 'src/' --exclude '.*/test/.*' --exclude 'build_linux/.*' --gcov-ignore-errors=all --gcov-ignore-parse-errors=all --merge-mode-functions=merge-use-line-min --exclude-throw-branches --exclude-branches-by-pattern "$BRANCH_EXCLUSIONS" --json coverage-measured.json
+          # ...and those that take more than the line itself to recognise.
+          python3 .github/scripts/coverage_exclusions.py coverage-measured.json coverage.json
+          gcovr --root . --add-tracefile coverage.json --json-summary coverage-summary.json --html-details coverage-html/index.html
+          python3 .github/scripts/coverage_summary.py coverage-summary.json coverage-html
+
+    - name: Upload coverage report
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: coverage-html
+        path: ${{github.workspace}}/coverage-html
 
 

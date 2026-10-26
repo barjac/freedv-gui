@@ -36,7 +36,7 @@
 
 #include <cassert>
 #include <chrono>
-#include "wx/thread.h"
+#include <mutex>
 
 #include "../util/logging/ulog.h"
 
@@ -46,7 +46,7 @@
 
 #include "../os/os_interface.h"
 
-extern wxMutex g_mutexProtectingCallbackData;
+extern std::mutex g_mutexProtectingPlayFiles;
 
 using namespace std::chrono_literals;
 
@@ -63,6 +63,7 @@ PlaybackStep::PlaybackStep(
     , nonRtThreadEnding_(false)
     , playbackResampler_(nullptr)
     , outputFifo_(inputSampleRate * NUM_SECONDS_TO_READ)
+    , resamplerResetRequested_(false)
 {
     // Pre-allocate buffers so we don't have to do so during real-time operation.
     outputSamples_ = std::make_unique<short[]>(inputSampleRate_);
@@ -97,9 +98,13 @@ short* PlaybackStep::execute(short*, int numInputSamples, int* numOutputSamples)
     unsigned int nsf = numInputSamples * getOutputSampleRate()/getInputSampleRate();
     *numOutputSamples = std::min((unsigned int)outputFifo_.numUsed(), nsf);
     
-    if (*numOutputSamples > 0)
+    if (*numOutputSamples > 0 && outputFifo_.read(outputSamples_.get(), *numOutputSamples) != 0)
     {
-        outputFifo_.read(outputSamples_.get(), *numOutputSamples);
+        // Raced with a concurrent reset() (e.g. the resampler being rebuilt
+        // on a sample-rate change); nothing was actually copied into
+        // outputSamples_, so report no output instead of replaying stale
+        // samples from the previous call.
+        *numOutputSamples = 0;
     }
    
     fileIoThreadSem_.signal();
@@ -119,7 +124,18 @@ void PlaybackStep::nonRtThreadEntry_()
 
     while (!nonRtThreadEnding_.load(std::memory_order_acquire))
     {
-        g_mutexProtectingCallbackData.Lock();
+        if (resamplerResetRequested_.exchange(false, std::memory_order_acquire) &&
+            playbackResampler_ != nullptr)
+        {
+            playbackResampler_->reset();
+        }
+
+        // Note: playbackResampler_, buf and outputFifo_'s write side are owned by
+        // this thread, so the only thing that needs locking is the SNDFILE handle
+        // itself (which the UI thread may close at any time). The lock is held only
+        // across each sf_read_short() call, never across resampling, so that the
+        // UI thread can't get stuck behind a large initial read (e.g. when the
+        // Voice Keyer starts).
         auto playFile = getSndFileFn_();
         if (playFile != nullptr)
         {
@@ -152,7 +168,17 @@ void PlaybackStep::nonRtThreadEntry_()
             {
                 int samplesAtSourceRate = nsf * fileSampleRate / inputSampleRate_;
                 samplesAtSourceRate = std::min(samplesAtSourceRate, NUM_SECONDS_PER_OPERATION * fileSampleRate);
-                unsigned int numRead = sf_read_short(playFile, buf.get(), samplesAtSourceRate);
+
+                unsigned int numRead = 0;
+                {
+                    std::unique_lock<std::mutex> lk(g_mutexProtectingPlayFiles);
+                    if (getSndFileFn_() != playFile)
+                    {
+                        // File was closed (or replaced) while we weren't holding the lock.
+                        break;
+                    }
+                    numRead = sf_read_short(playFile, buf.get(), samplesAtSourceRate);
+                }
          
                 //log_info("samplesAtSource = %d, numRead = %u", samplesAtSourceRate, numRead);
                 if (numRead > 0)
@@ -182,11 +208,14 @@ void PlaybackStep::nonRtThreadEntry_()
                     //log_info("file read complete");
                     buf = nullptr;
 
-                    // Unlock prior to calling completion function just in case
-                    // something in here causes the lock to be taken.
-                    g_mutexProtectingCallbackData.Unlock();
-                    fileCompleteFn_();
-                    g_mutexProtectingCallbackData.Lock();
+                    // Hold the file lock so that a looping completion function's
+                    // sf_seek() can't race with the file being closed. Completion
+                    // functions must not block on the UI thread or take this lock.
+                    std::unique_lock<std::mutex> lk(g_mutexProtectingPlayFiles);
+                    if (getSndFileFn_() == playFile)
+                    {
+                        fileCompleteFn_();
+                    }
                 }
 
                 if ((int)numRead == 0)
@@ -208,7 +237,6 @@ void PlaybackStep::nonRtThreadEntry_()
             outputFifo_.reset();
         }
 
-        g_mutexProtectingCallbackData.Unlock();
         fileIoThreadSem_.wait();
     }
 
@@ -220,10 +248,11 @@ void PlaybackStep::nonRtThreadEntry_()
 
 void PlaybackStep::reset() FREEDV_NONBLOCKING
 {
-    if (playbackResampler_ != nullptr)
-    {
-        playbackResampler_->reset();
-    }
+    // Don't touch playbackResampler_ directly here -- it's owned by
+    // nonRtThreadEntry_() on the file I/O thread, which may be concurrently
+    // recreating or executing it. This thread is real-time and must not
+    // lock, so just flag the request; the owning thread will apply it.
+    resamplerResetRequested_.store(true, std::memory_order_release);
 
     outputFifo_.reset();
 

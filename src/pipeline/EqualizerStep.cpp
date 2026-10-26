@@ -39,7 +39,7 @@
 #include "../sox_biquad.h"
 #include <assert.h>
 
-EqualizerStep::EqualizerStep(int sampleRate, bool* enableFilter, void** bassFilter, void** midFilter, void** trebleFilter, void** volFilter, audio_spin_mutex& filterLock)
+EqualizerStep::EqualizerStep(int sampleRate, std::atomic<bool>* enableFilter, void** bassFilter, void** midFilter, void** trebleFilter, void** volFilter, audio_spin_mutex& filterLock)
     : sampleRate_(sampleRate)
     , enableFilter_(enableFilter)
     , bassFilter_(bassFilter)
@@ -71,6 +71,7 @@ int EqualizerStep::getOutputSampleRate() const FREEDV_NONBLOCKING
 short* EqualizerStep::execute(short* inputSamples, int numInputSamples, int* numOutputSamples) FREEDV_NONBLOCKING
 {
     bool copiedToOutput = false;
+    *numOutputSamples = numInputSamples;
 
     // Note: if we can't lock, an update is in progress. Just assume no filters enabled
     // until update completes.
@@ -80,11 +81,10 @@ short* EqualizerStep::execute(short* inputSamples, int numInputSamples, int* num
         {
             memcpy(outputSamples_.get(), inputSamples, sizeof(short)*numInputSamples);
             copiedToOutput = true;
-            *numOutputSamples = numInputSamples;
             sox_biquad_filter(*volFilter_, outputSamples_.get(), outputSamples_.get(), numInputSamples);
         }
     
-        if (*enableFilter_)
+        if (enableFilter_->load(std::memory_order_relaxed))
         {
             if (!copiedToOutput)
             {
@@ -115,7 +115,6 @@ short* EqualizerStep::execute(short* inputSamples, int numInputSamples, int* num
     }
     else
     {
-        *numOutputSamples = numInputSamples;
         return inputSamples;
     }
 }

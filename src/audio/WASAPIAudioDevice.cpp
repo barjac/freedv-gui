@@ -26,6 +26,7 @@
 #include <chrono>
 #include <thread>
 #include <future>
+#include <cmath>
 #include <avrt.h>
 #include <timeapi.h>
 #include <inttypes.h>
@@ -35,6 +36,53 @@
 
 // Nanoseconds per REFERENCE_TIME unit
 #define NS_PER_REFTIME (100)
+
+namespace {
+    // NtQueryTimerResolution is an undocumented native API (declared in the
+    // WDK's wdm.h, not the Win32 SDK) that reports -- but does not set -- the
+    // OS's current timer resolution in 100ns units. Used by stopRealTimeWork()
+    // to decide how much margin a millisecond-granular wait needs before
+    // switching to a spin loop for the remainder, per
+    // https://www.siliceum.com/en/blog/post/windows-high-resolution-timers/.
+    // Loaded dynamically since it isn't exported by any import library;
+    // ntdll.dll is already mapped into every process, so this can't fail to
+    // resolve the module, only (in principle) the export.
+    typedef LONG (__stdcall *NtQueryTimerResolutionFn)(PULONG MinimumResolution, PULONG MaximumResolution, PULONG CurrentResolution);
+
+    NtQueryTimerResolutionFn GetNtQueryTimerResolution_()
+    {
+        static NtQueryTimerResolutionFn fn = reinterpret_cast<NtQueryTimerResolutionFn>(
+            GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryTimerResolution"));
+        return fn;
+    }
+
+    // PKEY_Devices_AudioDevice_RawProcessingSupported from propkey.h, defined
+    // locally since not every toolchain's headers provide it.
+    const PROPERTYKEY PKEY_RawProcessingSupported_ = {
+        { 0x8943b373, 0x388c, 0x4395, { 0xb5, 0x57, 0xbc, 0x6d, 0xba, 0xff, 0xaf, 0xdb } }, 2
+    };
+
+    // Requesting AUDCLNT_STREAMOPTIONS_RAW on an endpoint that doesn't support
+    // raw mode can make IAudioClient::Initialize() fail with E_INVALIDARG, so
+    // only request it when the device says it's supported.
+    bool IsRawModeSupported_(ComPtr<IMMDevice> device)
+    {
+        ComPtr<IPropertyStore> propStore = nullptr;
+        HRESULT hr = device->OpenPropertyStore(STGM_READ, propStore.GetAddressOf());
+        if (FAILED(hr))
+        {
+            log_warn("Could not open device property store to check for raw mode support (hr = %ld)", hr);
+            return false;
+        }
+
+        PROPVARIANT value;
+        PropVariantInit(&value);
+        hr = propStore->GetValue(PKEY_RawProcessingSupported_, &value);
+        bool supported = SUCCEEDED(hr) && value.vt == VT_BOOL && value.boolVal == VARIANT_TRUE;
+        PropVariantClear(&value);
+        return supported;
+    }
+}
 
 thread_local HANDLE WASAPIAudioDevice::HelperTask_ = nullptr;
     
@@ -53,8 +101,10 @@ WASAPIAudioDevice::WASAPIAudioDevice(ComPtr<IAudioClient3> client, ComPtr<IMMDev
     , renderCaptureEvent_(nullptr)
     , isRenderCaptureRunning_(false)
     , semaphore_(nullptr)
+    , highResTimer_(nullptr)
+    , timePeriodSet_(false)
     , tmpBuf_(nullptr)
-    , extraTimeMs_(0)
+    , waitOvershootHns_(0)
 {
     // empty
 }
@@ -72,6 +122,19 @@ WASAPIAudioDevice::~WASAPIAudioDevice()
         captureClient_ = nullptr;
         client_ = nullptr;
         device_ = nullptr;
+
+        if (semaphore_ != nullptr)
+        {
+            CloseHandle(semaphore_);
+            semaphore_ = nullptr;
+        }
+
+        if (highResTimer_ != nullptr)
+        {
+            CloseHandle(highResTimer_);
+            highResTimer_ = nullptr;
+        }
+
         prom->set_value();
     });
     fut.wait(); 
@@ -103,14 +166,22 @@ void WASAPIAudioDevice::start()
         prop.cbSize = sizeof(AudioClientProperties);
         prop.bIsOffload = FALSE;
         prop.eCategory = AudioCategory_Other;
-        prop.Options = AUDCLNT_STREAMOPTIONS_RAW;
+        if (IsRawModeSupported_(device_))
+        {
+            prop.Options = AUDCLNT_STREAMOPTIONS_RAW;
+        }
+        else
+        {
+            log_info("Device does not support raw mode, using default audio processing");
+            prop.Options = AUDCLNT_STREAMOPTIONS_NONE;
+        }
         HRESULT hr = client_->SetClientProperties(&prop);
         if (FAILED(hr))
         {
             // Non-critical error, can continue without setting properties.
             std::stringstream ss;
             ss << "Could not set AudioClient properties (hr = " << hr << ")";
-            log_warn(ss.str().c_str());
+            log_warn("%s", ss.str().c_str());
         }
         
         // Populate stream format based on requested sample
@@ -173,7 +244,7 @@ void WASAPIAudioDevice::start()
             {
                 std::stringstream ss;
                 ss << "Unknown mix format found: " << GuidToString_(&extFormat->SubFormat);
-                log_error(ss.str().c_str());
+                log_error("%s", ss.str().c_str());
                 if (onAudioErrorFunction)
                 {
                     onAudioErrorFunction(*this, ss.str(), onAudioErrorState);
@@ -190,7 +261,7 @@ void WASAPIAudioDevice::start()
         {
             std::stringstream ss;
             ss << "Unknown mix format found: " << streamFormatPtr->wFormatTag;
-            log_error(ss.str().c_str());
+            log_error("%s", ss.str().c_str());
             if (onAudioErrorFunction)
             {
                 onAudioErrorFunction(*this, ss.str(), onAudioErrorState);
@@ -224,7 +295,7 @@ void WASAPIAudioDevice::start()
             {
                 std::stringstream ss;
                 ss << "Could not initialize AudioClient (hr = " << hr << ")";
-                log_error(ss.str().c_str());
+                log_error("%s", ss.str().c_str());
                 if (onAudioErrorFunction)
                 {
                     onAudioErrorFunction(*this, ss.str(), onAudioErrorState);
@@ -245,7 +316,7 @@ void WASAPIAudioDevice::start()
         {
             std::stringstream ss;
             ss << "Could not create event (hr = " << GetLastError() << ")";
-            log_error(ss.str().c_str());
+            log_error("%s", ss.str().c_str());
             if (onAudioErrorFunction)
             {
                 onAudioErrorFunction(*this, ss.str(), onAudioErrorState);
@@ -260,7 +331,7 @@ void WASAPIAudioDevice::start()
         {
             std::stringstream ss;
             ss << "Could not assign event handle (hr = " << hr << ")";
-            log_error(ss.str().c_str());
+            log_error("%s", ss.str().c_str());
             if (onAudioErrorFunction)
             {
                 onAudioErrorFunction(*this, ss.str(), onAudioErrorState);
@@ -276,7 +347,7 @@ void WASAPIAudioDevice::start()
         {
             std::stringstream ss;
             ss << "Could not get buffer size (hr = " << hr << ")";
-            log_error(ss.str().c_str());
+            log_error("%s", ss.str().c_str());
             if (onAudioErrorFunction)
             {
                 onAudioErrorFunction(*this, ss.str(), onAudioErrorState);
@@ -295,7 +366,7 @@ void WASAPIAudioDevice::start()
         {
             std::stringstream ss;
             ss << "Could not get latency (hr = " << hr << ")";
-            log_warn(ss.str().c_str());
+            log_warn("%s", ss.str().c_str());
         }
         else
         {
@@ -319,7 +390,7 @@ void WASAPIAudioDevice::start()
         {
             std::stringstream ss;
             ss << "Could not get render/capture client (hr = " << hr << ")";
-            log_error(ss.str().c_str());
+            log_error("%s", ss.str().c_str());
             if (onAudioErrorFunction)
             {
                 onAudioErrorFunction(*this, ss.str(), onAudioErrorState);
@@ -331,6 +402,7 @@ void WASAPIAudioDevice::start()
         // Allocate temporary buffer
         tmpBuf_ = new short[sampleRate_];
         assert(tmpBuf_ != nullptr);
+        memset(tmpBuf_, 0, sizeof(short) * sampleRate_);
 
         if (direction_ == IAudioEngine::AUDIO_ENGINE_OUT)
         {
@@ -341,7 +413,7 @@ void WASAPIAudioDevice::start()
             {
                 std::stringstream ss;
                 ss << "Could not get render buffer (hr = " << hr << ")";
-                log_error(ss.str().c_str());
+                log_error("%s", ss.str().c_str());
                 if (onAudioErrorFunction)
                 {
                     onAudioErrorFunction(*this, ss.str(), onAudioErrorState);
@@ -355,7 +427,6 @@ void WASAPIAudioDevice::start()
                 return;
             }
 
-            memset(tmpBuf_, 0, bufferFrameCount_ * numChannels_ * sizeof(short));
             if (onAudioDataFunction)
             {
                 onAudioDataFunction(*this, tmpBuf_, bufferFrameCount_, onAudioDataState);
@@ -368,7 +439,7 @@ void WASAPIAudioDevice::start()
             {
                 std::stringstream ss;
                 ss << "Could not release render buffer (hr = " << hr << ")";
-                log_error(ss.str().c_str());
+                log_error("%s", ss.str().c_str());
                 if (onAudioErrorFunction)
                 {
                     onAudioErrorFunction(*this, ss.str(), onAudioErrorState);
@@ -383,18 +454,49 @@ void WASAPIAudioDevice::start()
             }
         }
 
-        // Create semaphore
-        semaphore_ = CreateSemaphore(nullptr, 0, 1, nullptr);
+        // Create semaphore, or clear the wakeup left in it by a previous stop().
+        if (semaphore_ != nullptr)
+        {
+            WaitForSingleObject(semaphore_, 0);
+        }
+        else
+        {
+            semaphore_ = CreateSemaphore(nullptr, 0, 1, nullptr);
+        }
         if (semaphore_ == nullptr)
         {
             std::stringstream ss;
             ss << "Could not create semaphore (err = " << GetLastError() << ")";
-            log_warn(ss.str().c_str());
+            log_warn("%s", ss.str().c_str());
+        }
+
+        // Create a high-resolution waitable timer for the debt-compensated
+        // wait in stopRealTimeWork(), so that wait isn't limited to
+        // WaitForSingleObject's millisecond-granular timeout. The high-res
+        // flag requires Windows 10 1803+; fall back to a regular (still
+        // usable, just lower-resolution) waitable timer if unavailable.
+        if (highResTimer_ == nullptr)
+        {
+            highResTimer_ = CreateWaitableTimerEx(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        }
+        if (highResTimer_ == nullptr)
+        {
+            highResTimer_ = CreateWaitableTimerEx(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
+        }
+        if (highResTimer_ == nullptr)
+        {
+            std::stringstream ss;
+            ss << "Could not create waitable timer (err = " << GetLastError() << ")";
+            log_warn("%s", ss.str().c_str());
         }
 
         // Reduce Windows timer resolution to 1ms to improve WaitForSingleObject
         // precision in the audio loop.
-        timeBeginPeriod(1);
+        if (!timePeriodSet_)
+        {
+            timeBeginPeriod(1);
+            timePeriodSet_ = true;
+        }
 
         // Start render/capture
         hr = client_->Start();
@@ -402,7 +504,7 @@ void WASAPIAudioDevice::start()
         {
             std::stringstream ss;
             ss << "Could not start audio device (hr = " << hr << ")";
-            log_error(ss.str().c_str());
+            log_error("%s", ss.str().c_str());
             if (onAudioErrorFunction)
             {
                 onAudioErrorFunction(*this, ss.str(), onAudioErrorState);
@@ -436,9 +538,32 @@ void WASAPIAudioDevice::start()
             // Temporarily raise priority of task
             setHelperRealTime();
 
+            // The render/capture event fires once per buffer period. If it
+            // fails to fire within 2 periods, the device is stalled: log the
+            // stall (once per episode) instead of silently underflowing, and
+            // poll at the faster cadence so we resume as soon as the driver
+            // recovers. Clamp to [25, 100] ms so devices with unusually large
+            // or small buffers still get a sane timeout.
+            UINT32 eventTimeoutMs = (2000 * bufferFrameCount_) / sampleRate_;
+            if (eventTimeoutMs < 25) eventTimeoutMs = 25;
+            if (eventTimeoutMs > 100) eventTimeoutMs = 100;
+            UINT32 consecutiveTimeouts = 0;
+
             while (isRenderCaptureRunning_)
             {
-                WaitForSingleObject(renderCaptureEvent_, 100);
+                DWORD waitResult = WaitForSingleObject(renderCaptureEvent_, eventTimeoutMs);
+                if (waitResult == WAIT_TIMEOUT)
+                {
+                    if (++consecutiveTimeouts == 1)
+                    {
+                        log_warn("WASAPI render/capture event did not fire within %d ms (device may be stalled)", eventTimeoutMs);
+                    }
+                }
+                else if (consecutiveTimeouts > 0)
+                {
+                    log_warn("WASAPI render/capture event resumed after %d timeout(s)", consecutiveTimeouts);
+                    consecutiveTimeouts = 0;
+                }
                 if (isRenderCaptureRunning_)
                 {
                     if (direction_ == IAudioEngine::AUDIO_ENGINE_OUT)
@@ -484,7 +609,7 @@ void WASAPIAudioDevice::stop()
             {
                 std::stringstream ss;
                 ss << "Could not stop audio device (hr = " << hr << ")";
-                log_error(ss.str().c_str());
+                log_error("%s", ss.str().c_str());
                 if (onAudioErrorFunction)
                 {
                     onAudioErrorFunction(*this, ss.str(), onAudioErrorState);
@@ -495,7 +620,12 @@ void WASAPIAudioDevice::stop()
         renderClient_ = nullptr;
         captureClient_ = nullptr;
 
-        timeEndPeriod(1);
+        // stop() also runs from the destructor, so only undo start()'s once.
+        if (timePeriodSet_)
+        {
+            timeEndPeriod(1);
+            timePeriodSet_ = false;
+        }
 
         if (renderCaptureEvent_ != nullptr)
         {
@@ -503,16 +633,19 @@ void WASAPIAudioDevice::stop()
             renderCaptureEvent_ = nullptr;
         }
         
+        // Wake anyone still waiting in stopRealTimeWork(). The handles stay
+        // open until the destructor: closing them here could pull them out
+        // from under a waiter (and the handle values could be reused).
         if (semaphore_ != nullptr)
         {
-            // Set semaphore_ to nullptr first in case someone could be potentially
-            // using it. Then for those currently waiting, release the semaphore 
-            // to get them unstuck. THEN we can close it. Otherwise, heap corruption
-            // occurs!
-            auto tmpSem = semaphore_;
-            semaphore_ = nullptr;
-            ReleaseSemaphore(tmpSem, 1, nullptr);
-            CloseHandle(tmpSem);
+            ReleaseSemaphore(semaphore_, 1, nullptr);
+        }
+
+        if (highResTimer_ != nullptr)
+        {
+            LARGE_INTEGER dueTime;
+            dueTime.QuadPart = 0;
+            SetWaitableTimer(highResTimer_, &dueTime, 0, nullptr, nullptr, FALSE);
         }
 
         if (tmpBuf_ != nullptr)
@@ -545,6 +678,21 @@ void WASAPIAudioDevice::setHelperRealTime()
     if (HelperTask_ == nullptr)
     {
         log_warn("Could not increase thread priority");
+        return;
+    }
+
+    // AvSetMmThreadCharacteristics() alone only enrolls the thread in the
+    // "Pro Audio" MMCSS class at that class's default (Normal) priority
+    // band. This thread's wait in stopRealTimeWork() is on the critical
+    // path for audio timing (it's what TxRxThread's wait/TX/RX stats
+    // measure), so bump it to the top of the band to cut down on how long
+    // it sits ready-but-not-running behind other MMCSS-scheduled threads
+    // after the semaphore/timer wakes it -- that scheduling delay is what
+    // shows up as wait jitter (stdev/max) rather than the wait target
+    // itself being wrong.
+    if (!AvSetMmThreadPriority(HelperTask_, AVRT_PRIORITY_CRITICAL))
+    {
+        log_warn("Could not raise MMCSS thread priority to critical (err = %lu)", GetLastError());
     }
 }
 
@@ -553,35 +701,105 @@ void WASAPIAudioDevice::startRealTimeWork()
     startTime_ = std::chrono::steady_clock::now();
 }
 
-void WASAPIAudioDevice::stopRealTimeWork(bool fastMode) 
+void WASAPIAudioDevice::stopRealTimeWork(bool fastMode)
 {
-    if (semaphore_ == nullptr)
+    if (semaphore_ == nullptr || highResTimer_ == nullptr)
     {
         // Fallback to base class behavior
         IAudioDevice::stopRealTimeWork();
         return;
     }
 
-    int64_t msec = ((1000 * bufferFrameCount_) / sampleRate_) >> (fastMode ? 1 : 0);
-    msec -= extraTimeMs_;
-    if (msec <= 0)
+    // Nominal period in 100ns units -- matches what SetWaitableTimer expects,
+    // and lets the compensation below track sub-millisecond amounts instead
+    // of being rounded down to whole milliseconds.
+    int64_t nominalHns = ((10000000LL * bufferFrameCount_) / sampleRate_) >> (fastMode ? 1 : 0);
+
+    // Compensate for how much of the period THIS cycle's own processing
+    // already used, measured directly against startTime_ (set by
+    // startRealTimeWork() right before processing began) rather than against
+    // a debt figure copied from the *previous* cycle. The previous approach
+    // lagged by one cycle: it corrected this wait for last cycle's overrun
+    // instead of this cycle's own, which overcorrects/undercorrects whenever
+    // processing time varies cycle to cycle instead of holding steady.
+    // waitOvershootHns_ separately tracks only the wait itself running long
+    // (the one thing that genuinely can't be known until after it happens),
+    // so a systematic scheduling overshoot still can't accumulate into drift.
+    auto elapsedHns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - startTime_).count() / 100;
+    int64_t hns = nominalHns - elapsedHns - waitOvershootHns_;
+    if (hns <= 0)
     {
-        extraTimeMs_ = 0;
+        waitOvershootHns_ = 0;
         return;
     }
 
-    // Wait a maximum of (bufferSize / sampleRate) seconds for the semaphore to return
-    DWORD result = WaitForSingleObject(semaphore_, ((1000 * bufferFrameCount_) / sampleRate_) >> (fastMode ? 1 : 0));
+    auto waitStartTime = std::chrono::steady_clock::now();
 
-    auto endTime = std::chrono::steady_clock::now();
-    auto duration = std::chrono::ceil<std::chrono::milliseconds>(endTime - startTime_).count() - msec;
-    extraTimeMs_ = std::max((int64_t)0, (int64_t)duration); // cap extra time to >= 0.
+    // Sleep for everything except the last tick of the OS's current timer
+    // resolution, then spin-wait the remainder in userspace. A blocking wait
+    // (WaitForSingleObject/WaitForMultipleObjects) can only wake up on a
+    // scheduler tick, and once woken still has to wait to actually be
+    // scheduled -- both add jitter on top of the wait target itself. Spinning
+    // through the last tick avoids that second trip through the scheduler.
+    // We still poll semaphore_ throughout (both during the sleep and the
+    // spin) so a stop() request still aborts the wait immediately rather than
+    // running it to completion. See
+    // https://www.siliceum.com/en/blog/post/windows-high-resolution-timers/.
+    ULONG minResHns = 0, maxResHns = 0, curResHns = 0;
+    auto ntQueryTimerResolution = GetNtQueryTimerResolution_();
+    bool signaledEarly = false;
 
-    if (result != WAIT_TIMEOUT && result != WAIT_OBJECT_0)
+    if (ntQueryTimerResolution != nullptr &&
+        ntQueryTimerResolution(&minResHns, &maxResHns, &curResHns) >= 0 &&
+        curResHns > 0)
     {
-        // Fallback to a simple sleep.
-        IAudioDevice::stopRealTimeWork(fastMode);
+        int64_t sleepHns = hns - (int64_t)curResHns;
+        if (sleepHns > 0)
+        {
+            DWORD sleepMs = (DWORD)(sleepHns / 10000); // 100ns units -> ms, rounded down
+            if (sleepMs > 0 && WaitForSingleObject(semaphore_, sleepMs) == WAIT_OBJECT_0)
+            {
+                signaledEarly = true;
+            }
+        }
+
+        if (!signaledEarly)
+        {
+            auto dueTime = waitStartTime + std::chrono::nanoseconds(hns * 100);
+            while (std::chrono::steady_clock::now() < dueTime)
+            {
+                if (WaitForSingleObject(semaphore_, 0) == WAIT_OBJECT_0)
+                {
+                    signaledEarly = true;
+                    break;
+                }
+                YieldProcessor();
+            }
+        }
     }
+    else
+    {
+        // NtQueryTimerResolution unavailable for some reason -- fall back to
+        // the high-resolution waitable timer instead of a spin loop with no
+        // idea how fine the OS's scheduling granularity actually is.
+        LARGE_INTEGER dueTime;
+        dueTime.QuadPart = -hns;
+        SetWaitableTimer(highResTimer_, &dueTime, 0, nullptr, nullptr, FALSE);
+
+        HANDLE waitHandles[2] = { semaphore_, highResTimer_ };
+        DWORD result = WaitForMultipleObjects(2, waitHandles, FALSE, INFINITE);
+        signaledEarly = (result == WAIT_OBJECT_0);
+
+        if (result != WAIT_OBJECT_0 && result != WAIT_OBJECT_0 + 1)
+        {
+            // Fallback to a simple sleep.
+            IAudioDevice::stopRealTimeWork(fastMode);
+            return;
+        }
+    }
+
+    auto actualWaitHns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - waitStartTime).count() / 100;
+    waitOvershootHns_ = std::max((int64_t)0, actualWaitHns - hns); // cap at >= 0; an early (semaphore) wake isn't overshoot.
 }
 
 void WASAPIAudioDevice::clearHelperRealTime()
@@ -612,7 +830,7 @@ void WASAPIAudioDevice::renderAudio_(ComPtr<IAudioRenderClient> renderClient)
         // with popups.
         std::stringstream ss;
         ss << "Could not get current padding (hr = " << hr << ")";
-        log_error(ss.str().c_str());
+        log_error("%s", ss.str().c_str());
         return;
     }
 
@@ -624,7 +842,7 @@ void WASAPIAudioDevice::renderAudio_(ComPtr<IAudioRenderClient> renderClient)
         // with popups.
         std::stringstream ss;
         ss << "Could not get render buffer (hr = " << hr << ")";
-        log_error(ss.str().c_str());
+        log_error("%s", ss.str().c_str());
         return;
     }
 
@@ -647,7 +865,7 @@ void WASAPIAudioDevice::renderAudio_(ComPtr<IAudioRenderClient> renderClient)
         // with popups.
         std::stringstream ss;
         ss << "Could not release render buffer (hr = " << hr << ")";
-        log_error(ss.str().c_str());
+        log_error("%s", ss.str().c_str());
         return;
     }
 }
@@ -669,7 +887,7 @@ void WASAPIAudioDevice::captureAudio_(ComPtr<IAudioCaptureClient> captureClient)
         // with popups.
         std::stringstream ss;
         ss << "Could not get packet length (hr = " << hr << ")";
-        log_error(ss.str().c_str());
+        log_error("%s", ss.str().c_str());
         return;
     }
 
@@ -691,7 +909,7 @@ void WASAPIAudioDevice::captureAudio_(ComPtr<IAudioCaptureClient> captureClient)
             // with popups.
             std::stringstream ss;
             ss << "Could not get capture buffer (hr = " << hr << ")";
-            log_error(ss.str().c_str());
+            log_error("%s", ss.str().c_str());
             return;
         }
 
@@ -720,7 +938,7 @@ void WASAPIAudioDevice::captureAudio_(ComPtr<IAudioCaptureClient> captureClient)
             // with popups.
             std::stringstream ss;
             ss << "Could not release capture buffer (hr = " << hr << ")";
-            log_error(ss.str().c_str());
+            log_error("%s", ss.str().c_str());
             return;
         }
 
@@ -731,7 +949,7 @@ void WASAPIAudioDevice::captureAudio_(ComPtr<IAudioCaptureClient> captureClient)
             // with popups.
             std::stringstream ss;
             ss << "Could not get packet length (hr = " << hr << ")";
-            log_error(ss.str().c_str());
+            log_error("%s", ss.str().c_str());
             return;
         }
     }

@@ -20,8 +20,22 @@
 //==========================================================================
 #include <string.h>
 #include <algorithm>
-#include "plot.h"
+
+#include <wx/wx.h>
+#include <wx/app.h>
 #include <wx/graphics.h>
+#if defined(_WIN32)
+#include <wx/rawbmp.h>
+#include <wx/msw/wrapwin.h>
+#endif // defined(_WIN32)
+
+#include "defines.h"
+
+#include "plot.h"
+
+#if defined(__APPLE__)
+extern void GivePlotOwnLayer(wxWindow* window); // plot_osx.mm
+#endif // defined(__APPLE__)
 
 BEGIN_EVENT_TABLE(PlotPanel, wxPanel)
     EVT_PAINT           (PlotPanel::OnPaint)
@@ -46,11 +60,8 @@ END_EVENT_TABLE()
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=--=-=-=-=
 PlotPanel::PlotPanel(wxWindow* parent, const char* plotName) : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL, plotName)
 {
-    // XXX - FreeDV only supports English but makes a best effort to at least use regional formatting
-    // for e.g. numbers. Thus, we only need to override layout direction.
-    SetLayoutDirection(wxLayout_LeftToRight);
+    WXWIDGETS_SET_LAYOUT_DIRECTION;
     
-    m_zoomFactor        = 1.0;
     m_firstPass         = true;
     m_line_color        = 0;
     m_newdata           = false;
@@ -58,11 +69,16 @@ PlotPanel::PlotPanel(wxWindow* parent, const char* plotName) : wxPanel(parent, w
     m_use_bitmap        = true;
     m_rubberBand        = false;
     m_mouseDown         = false;
+    sync_               = false;
     m_penShortDash      = wxPen(wxColor(0xA0, 0xA0, 0xA0), 1, wxPENSTYLE_SHORT_DASH);
     m_penDotDash        = wxPen(wxColor(0xD0, 0xD0, 0xD0), 1, wxPENSTYLE_DOT_DASH);
     m_penSolid          = wxPen(wxColor(0x00, 0x00, 0x00), 1, wxPENSTYLE_SOLID);
     SetBackgroundStyle(wxBG_STYLE_PAINT);
     m_label_size = 10.0;
+
+#if defined(__APPLE__)
+    GivePlotOwnLayer(this);
+#endif // defined(__APPLE__)
 }
 
 //-------------------------------------------------------------------------
@@ -70,14 +86,6 @@ PlotPanel::PlotPanel(wxWindow* parent, const char* plotName) : wxPanel(parent, w
 //-------------------------------------------------------------------------
 PlotPanel::~PlotPanel()
 {
-}
-
-//-------------------------------------------------------------------------
-// GetLabelSize()
-//-------------------------------------------------------------------------
-double PlotPanel::GetLabelSize()
-{
-    return m_label_size;
 }
 
 //-------------------------------------------------------------------------
@@ -94,14 +102,6 @@ void PlotPanel::SetLabelSize(double size)
 void PlotPanel::OnShow(wxShowEvent&)
 {
     this->Refresh();
-}
-
-//-------------------------------------------------------------------------
-// OnErase()
-//-------------------------------------------------------------------------
-void PlotPanel::OnErase(wxEraseEvent& event)
-{
-    event.Skip();
 }
 
 //-------------------------------------------------------------------------
@@ -145,67 +145,6 @@ void PlotPanel::OnMouseLeftUp(wxMouseEvent&)
 }
 
 //-------------------------------------------------------------------------
-// SetZoomFactor()
-//-------------------------------------------------------------------------
-double PlotPanel::SetZoomFactor(double zf)
-{
-    if((zf > 0) && (zf < 5.0))
-    {
-        m_zoomFactor = zf;
-    }
-    return zf;
-}
-
-//-------------------------------------------------------------------------
-// GetZoomFactor()
-//-------------------------------------------------------------------------
-double PlotPanel::GetZoomFactor(double)
-{
-    return m_zoomFactor;
-}
-
-//-------------------------------------------------------------------------
-// drawGraticule()
-//-------------------------------------------------------------------------
-void PlotPanel::drawGraticule(wxGraphicsContext* ctx)
-{
-    const int STR_LENGTH = 15;
-    
-    int p;
-    char buf[STR_LENGTH];
-
-    wxGraphicsFont tmpFont = ctx->CreateFont(GetFont(), GetForegroundColour());
-    ctx->SetFont(tmpFont);
-    
-    // Vertical gridlines
-    ctx->SetPen(m_penShortDash);
-    for(p = (PLOT_BORDER + XLEFT_OFFSET + GRID_INCREMENT); p < ((m_rGrid.GetWidth() - XLEFT_OFFSET) + GRID_INCREMENT); p += GRID_INCREMENT)
-    {
-        ctx->StrokeLine(p, (m_rGrid.GetHeight() + PLOT_BORDER), p, PLOT_BORDER);
-    }
-    // Horizontal gridlines
-    ctx->SetPen(m_penDotDash);
-    for(p = (m_rGrid.GetHeight() - GRID_INCREMENT); p > PLOT_BORDER; p -= GRID_INCREMENT)
-    {
-        ctx->StrokeLine(PLOT_BORDER + XLEFT_OFFSET, (p + PLOT_BORDER), (m_rGrid.GetWidth() + PLOT_BORDER + XLEFT_OFFSET), (p + PLOT_BORDER));
-    }
-    // Label the X-Axis
-    ctx->SetPen(wxPen(GREY_COLOR, 1));
-    for(p = GRID_INCREMENT; p < (m_rGrid.GetWidth() - YBOTTOM_OFFSET); p += GRID_INCREMENT)
-    {
-        snprintf(buf, STR_LENGTH, "%1.1f Hz",(double)(p / 10));
-        ctx->DrawText(buf, p - PLOT_BORDER + XLEFT_OFFSET, m_rGrid.GetHeight() + YBOTTOM_OFFSET/2);
-    }
-    // Label the Y-Axis
-    //for(p = GRID_INCREMENT; p < (h - YBOTTOM_OFFSET); p += GRID_INCREMENT)
-    for(p = (m_rGrid.GetHeight() - GRID_INCREMENT); p > PLOT_BORDER; p -= GRID_INCREMENT)
-    {
-        snprintf(buf, STR_LENGTH, "%1.0f", (double)((m_rGrid.GetHeight() - p) * -10));
-        ctx->DrawText(buf, XLEFT_TEXT_OFFSET, p);
-    }
-}
-
-//-------------------------------------------------------------------------
 // paintEvent()
 //
 // Called by the system of by wxWidgets when the panel needs
@@ -214,7 +153,55 @@ void PlotPanel::drawGraticule(wxGraphicsContext* ctx)
 //-------------------------------------------------------------------------
 void PlotPanel::OnPaint(wxPaintEvent & evt)
 {
+#if defined(_WIN32)
+    // Paint into our own 32bpp DIB rather than wxWidgets' shared 24bpp buffer. GDI+ can
+    // only rasterize straight into 32bpp bitmaps; with 24bpp, each primitive went through
+    // GDI in the kernel instead, which was a large share of the GUI thread while the plots
+    // repaint during TX.
+    wxSize bufferSize = GetClientSize();
+    bufferSize.IncTo(wxSize(1, 1));
+    if (!paintBuffer_.IsOk() || paintBuffer_.GetSize() != bufferSize)
+    {
+        paintBuffer_.Create(bufferSize, 32);
+
+        // wxGDIPlusRenderer::CreateContext() makes the alpha channel of a 32bpp bitmap
+        // opaque, then clears its "has alpha" flag again, so it would redo that for the
+        // whole buffer on every paint. Do it once here and leave the flag set.
+        wxAlphaPixelData data(paintBuffer_);
+        if (data)
+        {
+            wxAlphaPixelData::Iterator p(data);
+            for (int y = 0; y < data.GetHeight(); y++)
+            {
+                wxAlphaPixelData::Iterator rowStart = p;
+                for (int x = 0; x < data.GetWidth(); x++, ++p)
+                {
+                    p.Alpha() = wxALPHA_OPAQUE;
+                }
+                p = rowStart;
+                p.OffsetY(data, 1);
+            }
+        }
+        paintBuffer_.UseAlpha();
+    }
+#if wxCHECK_VERSION(3, 2, 0)
+    // Copy the buffer to the window ourselves (see the end of this function) rather than
+    // with wxBufferedPaintDC: wxWidgets copies a DIB section with StretchDIBits() (or
+    // AlphaBlend(), as this one has an alpha channel), which was slower than BitBlt().
+    // The memory DC is set up the same way as wxBufferedPaintDC's, so that text is laid
+    // out for the window's DPI.
+    wxPaintDC paintDC(this);
+    wxMemoryDC dc(&paintDC);
+    dc.SelectObject(paintBuffer_);
+    dc.GetImpl()->SetWindow(this);
+    dc.CopyAttributes(paintDC);
+    dc.GetImpl()->InheritAttributes(this);
+#else
+    wxBufferedPaintDC dc(this, paintBuffer_);
+#endif // wxCHECK_VERSION(3, 2, 0)
+#else
     wxAutoBufferedPaintDC dc(this);
+#endif // defined(_WIN32)
 
     bool repaintDataOnly = !repaintAll_(evt);
     if (!repaintDataOnly)
@@ -230,5 +217,12 @@ void PlotPanel::OnPaint(wxPaintEvent & evt)
         draw(gc, repaintDataOnly);
         delete gc;
     }
+
+#if defined(_WIN32) && wxCHECK_VERSION(3, 2, 0)
+    // Only the invalidated area needs copying (just the plot area for repaintDataOnly).
+    wxRect update = GetUpdateRegion().GetBox().Intersect(wxRect(bufferSize));
+    ::BitBlt((HDC)paintDC.GetHDC(), update.x, update.y, update.width, update.height,
+             (HDC)dc.GetHDC(), update.x, update.y, SRCCOPY);
+#endif // defined(_WIN32) && wxCHECK_VERSION(3, 2, 0)
 }
 

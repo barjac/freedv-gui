@@ -57,7 +57,9 @@ FreeDVInterface::FreeDVInterface() :
     lpcnetEncState_(nullptr),
     radeTxStep_(nullptr),
     sync_(0),
-    radeTextPtr_(nullptr)
+    rxFreqOffset_(0.0f),
+    radeTextPtr_(nullptr),
+    reliableTextFifo_(RELIABLE_TEXT_FIFO_SIZE + 1)
 {
     // empty
 }
@@ -67,7 +69,6 @@ FreeDVInterface::~FreeDVInterface()
     if (isRunning()) stop();
 }
 
-
 void FreeDVInterface::OnRadeTextRx_(rade_text_t, const char* txt_ptr, int, void* state) 
 {
     log_info("FreeDVInterface::OnRadeTextRx_: received %s", txt_ptr);
@@ -75,21 +76,32 @@ void FreeDVInterface::OnRadeTextRx_(rade_text_t, const char* txt_ptr, int, void*
     FreeDVInterface* obj = (FreeDVInterface*)state;
     assert(obj != nullptr);
     
-    {
-        std::unique_lock<std::mutex> lock(obj->reliableTextMutex_);
-        obj->receivedReliableText_ = txt_ptr;
-    }
+    char tmpBuf[RELIABLE_TEXT_FIFO_SIZE];
+    memset(tmpBuf, 0, RELIABLE_TEXT_FIFO_SIZE);
+    strncpy(tmpBuf, txt_ptr, RELIABLE_TEXT_FIFO_SIZE - 1);
+    obj->reliableTextFifo_.write(tmpBuf, RELIABLE_TEXT_FIFO_SIZE);
 }
 
 void FreeDVInterface::resetReliableText()
 {
     std::unique_lock<std::mutex> lock(reliableTextMutex_);
     receivedReliableText_ = "";
+    reliableTextFifo_.reset();
 }
 
 const char* FreeDVInterface::getReliableText()
-{
+{    
     std::unique_lock<std::mutex> lock(reliableTextMutex_);
+    
+    if (reliableTextFifo_.numUsed() > 0)
+    {
+        char tmpBuf[RELIABLE_TEXT_FIFO_SIZE] = { 0 };
+        if (reliableTextFifo_.read(tmpBuf, RELIABLE_TEXT_FIFO_SIZE) == 0)
+        {
+            receivedReliableText_ = tmpBuf;
+        }
+    }
+    
     char* ret = new char[receivedReliableText_.size() + 1];
     assert(ret != nullptr);
     
@@ -101,7 +113,7 @@ const char* FreeDVInterface::getReliableText()
     return ret;
 }
 
-void FreeDVInterface::start(int, bool usingReliableText)
+void FreeDVInterface::start(int, bool usingReliableText, bool verbose)
 {
     sync_.store(0, std::memory_order_release);
 
@@ -112,7 +124,7 @@ void FreeDVInterface::start(int, bool usingReliableText)
     // TBD - modelFile may be used by RADE in the future!
     char modelFile[1];
     modelFile[0] = 0;
-    rade_ = rade_open(modelFile, RADE_USE_C_ENCODER | RADE_USE_C_DECODER | (wxGetApp().appConfiguration.debugVerbose ? 0 : RADE_VERBOSE_0));
+    rade_ = rade_open(modelFile, RADE_USE_C_ENCODER | RADE_USE_C_DECODER | (verbose ? 0 : RADE_VERBOSE_0));
     assert(rade_ != nullptr);
 
     if (usingReliableText)
@@ -219,7 +231,7 @@ int FreeDVInterface::getTxNNomModemSamples() const FREEDV_NONBLOCKING
     // Verified that rade_api.c from librade has no unbounded operations
     // as of 2025-10-03.
     FREEDV_BEGIN_VERIFIED_SAFE
-    return std::max(rade_n_tx_out(rade_), radeTxStep_->eooLengthInSamples());
+    return std::max(rade_n_tx_out(rade_), radeTxStep_ != nullptr ? radeTxStep_->eooLengthInSamples() : rade_n_tx_eoo_out(rade_));
     FREEDV_END_VERIFIED_SAFE
 }
 
@@ -266,7 +278,9 @@ float FreeDVInterface::getSNREstimate()
 
 float FreeDVInterface::getCurrentRxModemOffset()
 {
-    return rade_freq_offset(rade_);
+    // Read from the GUI thread, so use the copy the RX thread publishes
+    // rather than reading the modem state it's updating.
+    return rxFreqOffset_.load(std::memory_order_acquire);
 }
 
 IPipelineStep* FreeDVInterface::createTransmitPipeline(
@@ -302,6 +316,11 @@ IPipelineStep* FreeDVInterface::createReceivePipeline(
         (*step->getRxStateFn()()).store(finalSync, std::memory_order_release);
         state->sync_.store(finalSync, std::memory_order_release);
         state->radeSnr_.store(step->getSnr(), std::memory_order_release);
+
+        // Verified that rade_freq_offset() is a simple getter as of 2026-10-22.
+        FREEDV_BEGIN_VERIFIED_SAFE
+        state->rxFreqOffset_.store(rade_freq_offset(state->rade_), std::memory_order_release);
+        FREEDV_END_VERIFIED_SAFE
     }, getFreqOffsetFn);
     rxStep->setStateObj(this);
     rxStep->setRxStateFn(getRxStateFn);

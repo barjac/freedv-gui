@@ -107,15 +107,16 @@ static wxString getPTTKeyName(int keyCode)
 
 // PortAudio over/underflow counters
 
+extern std::atomic<int>    g_noiseSNR;
 extern std::atomic<int>    g_infifo1_full;
 extern std::atomic<int>    g_outfifo1_empty;
 extern std::atomic<int>    g_infifo2_full;
 extern std::atomic<int>    g_outfifo2_empty;
-extern int                 g_AEstatus1[4];
-extern int                 g_AEstatus2[4];
+extern std::atomic<int>    g_AEstatus1[4];
+extern std::atomic<int>    g_AEstatus2[4];
 extern wxDatagramSocket    *g_sock;
-extern int                 g_dump_timing;
-extern int                 g_dump_fifo_state;
+extern std::atomic<int>    g_dump_timing;
+extern std::atomic<int>    g_dump_fifo_state;
 extern int                 g_freedv_verbose;
 extern wxConfigBase *pConfig;
 
@@ -124,9 +125,7 @@ extern wxConfigBase *pConfig;
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=--=-=-=-=
 OptionsDlg::OptionsDlg(wxWindow* parent, wxWindowID id, const wxString& title, const wxPoint& pos, const wxSize& size, long style) : wxDialog(parent, id, title, pos, size, style)
 {
-    // XXX - FreeDV only supports English but makes a best effort to at least use regional formatting
-    // for e.g. numbers. Thus, we only need to override layout direction.
-    SetLayoutDirection(wxLayout_LeftToRight);
+    WXWIDGETS_SET_LAYOUT_DIRECTION;
     
     if (wxGetApp().customConfigFileName != "")
     {
@@ -232,8 +231,8 @@ OptionsDlg::OptionsDlg(wxWindow* parent, wxWindowID id, const wxString& title, c
     m_cbPttMethod->Append(wxT("CAT"));
     m_cbPttMethod->Append(wxT("RTS"));
     m_cbPttMethod->Append(wxT("DTR"));
-    m_cbPttMethod->Append(wxT("None"));
-    m_cbPttMethod->Append(wxT("CAT via Data port"));
+    m_cbPttMethod->Append(_("None"));
+    m_cbPttMethod->Append(_("CAT via Data port"));
 
     wxBoxSizer* forceRtsSizer = new wxBoxSizer(wxHORIZONTAL);
     m_ckForceRTSOn = new wxCheckBox(hamlibBox, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(-1, -1), 0);
@@ -374,13 +373,13 @@ OptionsDlg::OptionsDlg(wxWindow* parent, wxWindowID id, const wxString& title, c
     m_ckboxReportingEnable = new wxCheckBox(sbReporting, wxID_ANY, _("Enable Reporting"), wxDefaultPosition, wxDefaultSize, wxCHK_2STATE);
     sbSizerReportingGeneral->Add(m_ckboxReportingEnable, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
     
-    wxStaticText* labelPskCallsign = new wxStaticText(sbReporting, wxID_ANY, wxT("Callsign:"), wxDefaultPosition, wxDefaultSize, 0);
+    wxStaticText* labelPskCallsign = new wxStaticText(sbReporting, wxID_ANY, _("Callsign:"), wxDefaultPosition, wxDefaultSize, 0);
     sbSizerReportingGeneral->Add(labelPskCallsign, 0,  static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
     
     m_txt_callsign = new wxTextCtrl(sbReporting, wxID_ANY,  wxEmptyString, wxDefaultPosition, wxSize(180,-1), 0, wxTextValidator(wxFILTER_ALPHANUMERIC));
     sbSizerReportingGeneral->Add(m_txt_callsign, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
     
-    wxStaticText* labelPskGridSquare = new wxStaticText(sbReporting, wxID_ANY, wxT("Grid Square/Locator:"), wxDefaultPosition, wxDefaultSize, 0);
+    wxStaticText* labelPskGridSquare = new wxStaticText(sbReporting, wxID_ANY, _("Grid Square/Locator:"), wxDefaultPosition, wxDefaultSize, 0);
     sbSizerReportingGeneral->Add(labelPskGridSquare, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
     
     m_txt_grid_square = new wxTextCtrl(sbReporting, wxID_ANY,  wxEmptyString, wxDefaultPosition, wxSize(180,-1), 0, wxTextValidator(wxFILTER_ALPHANUMERIC));
@@ -410,11 +409,11 @@ OptionsDlg::OptionsDlg(wxWindow* parent, wxWindowID id, const wxString& title, c
     m_ckboxUDPReportingEnable = new wxCheckBox(sbReporting, wxID_ANY, _("Enable QSO Logging"), wxDefaultPosition, wxDefaultSize, wxCHK_2STATE);
     m_ckboxUDPReportingEnable->SetToolTip(_("Enables QSO logging using the WSJT-X support in your preferred logging program."));
     sbSizerReportingUDP->Add(m_ckboxUDPReportingEnable, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
-    wxStaticText* labelUDPHostName = new wxStaticText(sbReporting, wxID_ANY, wxT("IP Address:"), wxDefaultPosition, wxDefaultSize, 0);
+    wxStaticText* labelUDPHostName = new wxStaticText(sbReporting, wxID_ANY, _("IP Address:"), wxDefaultPosition, wxDefaultSize, 0);
     sbSizerReportingUDP->Add(labelUDPHostName, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
     m_udpHostname = new wxTextCtrl(sbReporting, wxID_ANY,  wxEmptyString, wxDefaultPosition, wxSize(150,-1), 0);
     sbSizerReportingUDP->Add(m_udpHostname, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
-    wxStaticText* labelUDPPort = new wxStaticText(sbReporting, wxID_ANY, wxT("Port:"), wxDefaultPosition, wxDefaultSize, 0);
+    wxStaticText* labelUDPPort = new wxStaticText(sbReporting, wxID_ANY, _("Port:"), wxDefaultPosition, wxDefaultSize, 0);
     sbSizerReportingUDP->Add(labelUDPPort, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
     m_udpPort = new wxTextCtrl(sbReporting, wxID_ANY,  wxEmptyString, wxDefaultPosition, wxSize(60,-1), 0);
     sbSizerReportingUDP->Add(m_udpPort, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
@@ -426,11 +425,11 @@ OptionsDlg::OptionsDlg(wxWindow* parent, wxWindowID id, const wxString& title, c
     m_ckboxUDPBroadcastEnable = new wxCheckBox(sbReporting, wxID_ANY, _("Enable UDP Broadcast"), wxDefaultPosition, wxDefaultSize, wxCHK_2STATE);
     m_ckboxUDPBroadcastEnable->SetToolTip(_("Broadcasts received callsign/frequency data as JSON UDP datagrams (e.g. to a multicast group or a local listener)."));
     sbSizerReportingUDPBroadcast->Add(m_ckboxUDPBroadcastEnable, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
-    wxStaticText* labelUDPBroadcastAddr = new wxStaticText(sbReporting, wxID_ANY, wxT("IP Address:"), wxDefaultPosition, wxDefaultSize, 0);
+    wxStaticText* labelUDPBroadcastAddr = new wxStaticText(sbReporting, wxID_ANY, _("IP Address:"), wxDefaultPosition, wxDefaultSize, 0);
     sbSizerReportingUDPBroadcast->Add(labelUDPBroadcastAddr, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
     m_udpBroadcastAddress = new wxTextCtrl(sbReporting, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(150, -1), 0);
     sbSizerReportingUDPBroadcast->Add(m_udpBroadcastAddress, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
-    wxStaticText* labelUDPBroadcastPort = new wxStaticText(sbReporting, wxID_ANY, wxT("Port:"), wxDefaultPosition, wxDefaultSize, 0);
+    wxStaticText* labelUDPBroadcastPort = new wxStaticText(sbReporting, wxID_ANY, _("Port:"), wxDefaultPosition, wxDefaultSize, 0);
     sbSizerReportingUDPBroadcast->Add(labelUDPBroadcastPort, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
     m_udpBroadcastPort = new wxTextCtrl(sbReporting, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(60, -1), 0);
     sbSizerReportingUDPBroadcast->Add(m_udpBroadcastPort, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
@@ -439,7 +438,7 @@ OptionsDlg::OptionsDlg(wxWindow* parent, wxWindowID id, const wxString& title, c
 
     // CSV log file path
     wxBoxSizer* sbSizerCsvLog = new wxBoxSizer(wxHORIZONTAL);
-    wxStaticText* labelCsvLogPath = new wxStaticText(sbReporting, wxID_ANY, wxT("Stations Heard Log File:"), wxDefaultPosition, wxDefaultSize, 0);
+    wxStaticText* labelCsvLogPath = new wxStaticText(sbReporting, wxID_ANY, _("Stations Heard Log File:"), wxDefaultPosition, wxDefaultSize, 0);
     sbSizerCsvLog->Add(labelCsvLogPath, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
     m_txtCtrlCsvLogFilePath = new wxTextCtrl(sbReporting, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(200, -1), 0);
     sbSizerCsvLog->Add(m_txtCtrlCsvLogFilePath, 1, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
@@ -454,7 +453,7 @@ OptionsDlg::OptionsDlg(wxWindow* parent, wxWindowID id, const wxString& title, c
     wxStaticBox* sbReportingFreeDV = new wxStaticBox(m_reportingTab, wxID_ANY, _("FreeDV Reporter"));
     wxStaticBoxSizer* sbSizerReportingFreeDVNoCall = new wxStaticBoxSizer(sbReportingFreeDV, wxHORIZONTAL);
 
-    wxStaticText* labelFreeDVHostName = new wxStaticText(sbReportingFreeDV, wxID_ANY, wxT("Hostname:"), wxDefaultPosition, wxDefaultSize, 0);
+    wxStaticText* labelFreeDVHostName = new wxStaticText(sbReportingFreeDV, wxID_ANY, _("Hostname:"), wxDefaultPosition, wxDefaultSize, 0);
     m_freedvReporterHostname = new wxTextCtrl(sbReportingFreeDV, wxID_ANY,  wxEmptyString, wxDefaultPosition, wxSize(250, -1), 0);
     sbSizerReportingFreeDVNoCall->Add(labelFreeDVHostName, 0,  static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
     sbSizerReportingFreeDVNoCall->Add(m_freedvReporterHostname, 0,  static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
@@ -573,27 +572,31 @@ OptionsDlg::OptionsDlg(wxWindow* parent, wxWindowID id, const wxString& title, c
     wxGridBagSizer* gridSizer = new wxGridBagSizer(5, 5);
     
     m_freqList = new wxListBox(sb_freqList, wxID_ANY, wxDefaultPosition, wxSize(350,150), 0, NULL, wxLB_SINGLE | wxLB_NEEDED_SB);
-    gridSizer->Add(m_freqList, wxGBPosition(0, 0), wxGBSpan(2, 2), static_cast<int>(wxEXPAND));
+    gridSizer->Add(m_freqList, wxGBPosition(0, 0), wxGBSpan(1, 2), static_cast<int>(wxEXPAND));
 
-    const int FREQ_LIST_BUTTON_WIDTH = 100;
+    // Add and Remove stacked at the top beside the list, rather than spread
+    // over its height.
+    const int FREQ_LIST_BUTTON_WIDTH = 100; 
     const int FREQ_LIST_BUTTON_HEIGHT = -1;
+    wxBoxSizer* freqListButtons = new wxBoxSizer(wxVERTICAL);
     m_freqListAdd = new wxButton(sb_freqList, wxID_ANY, _("Add"), wxDefaultPosition, wxSize(FREQ_LIST_BUTTON_WIDTH,FREQ_LIST_BUTTON_HEIGHT), 0);
-    gridSizer->Add(m_freqListAdd, wxGBPosition(0, 2), wxDefaultSpan, static_cast<int>(wxEXPAND));
+    freqListButtons->Add(m_freqListAdd, 0, static_cast<int>(wxEXPAND) | wxBOTTOM, 5);
     m_freqListRemove = new wxButton(sb_freqList, wxID_ANY, _("Remove"), wxDefaultPosition, wxSize(FREQ_LIST_BUTTON_WIDTH,FREQ_LIST_BUTTON_HEIGHT), 0);
-    gridSizer->Add(m_freqListRemove, wxGBPosition(1, 2), wxDefaultSpan, static_cast<int>(wxEXPAND));
-
+    freqListButtons->Add(m_freqListRemove, 0, static_cast<int>(wxEXPAND));
+    gridSizer->Add(freqListButtons, wxGBPosition(0, 2), wxDefaultSpan, wxALIGN_TOP);
+    
     if (wxGetApp().appConfiguration.reportingConfiguration.reportingFrequencyAsKhz)
     {
-        m_labelEnterFreq = new wxStaticText(sb_freqList, wxID_ANY, wxT("Enter frequency (kHz):"), wxDefaultPosition, wxDefaultSize, 0);
+        m_labelEnterFreq = new wxStaticText(sb_freqList, wxID_ANY, _("Enter frequency (kHz):"), wxDefaultPosition, wxDefaultSize, 0);
     }
     else
     {
-        m_labelEnterFreq = new wxStaticText(sb_freqList, wxID_ANY, wxT("Enter frequency (MHz):"), wxDefaultPosition, wxDefaultSize, 0);
+        m_labelEnterFreq = new wxStaticText(sb_freqList, wxID_ANY, _("Enter frequency (MHz):"), wxDefaultPosition, wxDefaultSize, 0);
     }
-    gridSizer->Add(m_labelEnterFreq, wxGBPosition(2, 0), wxDefaultSpan, wxALIGN_CENTER_VERTICAL);
-
+    gridSizer->Add(m_labelEnterFreq, wxGBPosition(1, 0), wxDefaultSpan, wxALIGN_CENTER_VERTICAL);
+    
     m_txtCtrlNewFrequency = new wxTextCtrl(sb_freqList, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0);
-    gridSizer->Add(m_txtCtrlNewFrequency, wxGBPosition(2, 1), wxGBSpan(1, 2), static_cast<int>(wxEXPAND));
+    gridSizer->Add(m_txtCtrlNewFrequency, wxGBPosition(1, 1), wxGBSpan(1, 2), static_cast<int>(wxEXPAND));
     
     sbSizer_freqList->Add(gridSizer, 0, static_cast<int>(wxALL), 5);
     
@@ -628,48 +631,48 @@ OptionsDlg::OptionsDlg(wxWindow* parent, wxWindowID id, const wxString& title, c
     wxFlexGridSizer* reporterColorSizer = new wxFlexGridSizer(5, wxSize(5, 5));
 
     // TX colors
-    wxStaticText* labelReporterTxStation = new wxStaticText(sb_reporterColor, wxID_ANY, wxT("TX Stations:"), wxDefaultPosition, wxDefaultSize, 0);
+    wxStaticText* labelReporterTxStation = new wxStaticText(sb_reporterColor, wxID_ANY, _("TX Stations:"), wxDefaultPosition, wxDefaultSize, 0);
     reporterColorSizer->Add(labelReporterTxStation, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
 
-    wxStaticText* labelReporterTxBackgroundColor = new wxStaticText(sb_reporterColor, wxID_ANY, wxT("Background"), wxDefaultPosition, wxDefaultSize, 0);
+    wxStaticText* labelReporterTxBackgroundColor = new wxStaticText(sb_reporterColor, wxID_ANY, _("Background"), wxDefaultPosition, wxDefaultSize, 0);
     reporterColorSizer->Add(labelReporterTxBackgroundColor, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
 
     m_freedvReporterTxBackgroundColor = new wxColourPickerCtrl(sb_reporterColor, wxID_ANY);
     reporterColorSizer->Add(m_freedvReporterTxBackgroundColor, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
     
-    wxStaticText* labelReporterTxForegroundColor = new wxStaticText(sb_reporterColor, wxID_ANY, wxT("Foreground"), wxDefaultPosition, wxDefaultSize, 0);
+    wxStaticText* labelReporterTxForegroundColor = new wxStaticText(sb_reporterColor, wxID_ANY, _("Foreground"), wxDefaultPosition, wxDefaultSize, 0);
     reporterColorSizer->Add(labelReporterTxForegroundColor, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
 
     m_freedvReporterTxForegroundColor = new wxColourPickerCtrl(sb_reporterColor, wxID_ANY);
     reporterColorSizer->Add(m_freedvReporterTxForegroundColor, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
 
     // RX colors
-    wxStaticText* labelReporterRxStation = new wxStaticText(sb_reporterColor, wxID_ANY, wxT("RX Stations:"), wxDefaultPosition, wxDefaultSize, 0);
+    wxStaticText* labelReporterRxStation = new wxStaticText(sb_reporterColor, wxID_ANY, _("RX Stations:"), wxDefaultPosition, wxDefaultSize, 0);
     reporterColorSizer->Add(labelReporterRxStation, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
 
-    wxStaticText* labelReporterRxBackgroundColor = new wxStaticText(sb_reporterColor, wxID_ANY, wxT("Background"), wxDefaultPosition, wxDefaultSize, 0);
+    wxStaticText* labelReporterRxBackgroundColor = new wxStaticText(sb_reporterColor, wxID_ANY, _("Background"), wxDefaultPosition, wxDefaultSize, 0);
     reporterColorSizer->Add(labelReporterRxBackgroundColor, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
 
     m_freedvReporterRxBackgroundColor = new wxColourPickerCtrl(sb_reporterColor, wxID_ANY);
     reporterColorSizer->Add(m_freedvReporterRxBackgroundColor, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
     
-    wxStaticText* labelReporterRxForegroundColor = new wxStaticText(sb_reporterColor, wxID_ANY, wxT("Foreground"), wxDefaultPosition, wxDefaultSize, 0);
+    wxStaticText* labelReporterRxForegroundColor = new wxStaticText(sb_reporterColor, wxID_ANY, _("Foreground"), wxDefaultPosition, wxDefaultSize, 0);
     reporterColorSizer->Add(labelReporterRxForegroundColor, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
 
     m_freedvReporterRxForegroundColor = new wxColourPickerCtrl(sb_reporterColor, wxID_ANY);
     reporterColorSizer->Add(m_freedvReporterRxForegroundColor, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
 
     // Message colors
-    wxStaticText* labelReporterMsgStation = new wxStaticText(sb_reporterColor, wxID_ANY, wxT("Message updates:"), wxDefaultPosition, wxDefaultSize, 0);
+    wxStaticText* labelReporterMsgStation = new wxStaticText(sb_reporterColor, wxID_ANY, _("Message updates:"), wxDefaultPosition, wxDefaultSize, 0);
     reporterColorSizer->Add(labelReporterMsgStation, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
 
-    wxStaticText* labelReporterMsgBackgroundColor = new wxStaticText(sb_reporterColor, wxID_ANY, wxT("Background"), wxDefaultPosition, wxDefaultSize, 0);
+    wxStaticText* labelReporterMsgBackgroundColor = new wxStaticText(sb_reporterColor, wxID_ANY, _("Background"), wxDefaultPosition, wxDefaultSize, 0);
     reporterColorSizer->Add(labelReporterMsgBackgroundColor, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
 
     m_freedvReporterMsgBackgroundColor = new wxColourPickerCtrl(sb_reporterColor, wxID_ANY);
     reporterColorSizer->Add(m_freedvReporterMsgBackgroundColor, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
     
-    wxStaticText* labelReporterMsgForegroundColor = new wxStaticText(sb_reporterColor, wxID_ANY, wxT("Foreground"), wxDefaultPosition, wxDefaultSize, 0);
+    wxStaticText* labelReporterMsgForegroundColor = new wxStaticText(sb_reporterColor, wxID_ANY, _("Foreground"), wxDefaultPosition, wxDefaultSize, 0);
     reporterColorSizer->Add(labelReporterMsgForegroundColor, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
 
     m_freedvReporterMsgForegroundColor = new wxColourPickerCtrl(sb_reporterColor, wxID_ANY);
@@ -685,7 +688,7 @@ OptionsDlg::OptionsDlg(wxWindow* parent, wxWindowID id, const wxString& title, c
 
     wxBoxSizer* spectrumPanelControlSizer = new wxBoxSizer(wxHORIZONTAL);
     
-    wxStaticText* labelAveraging = new wxStaticText(sb_PlotSettings, wxID_ANY, wxT("Average spectrum plot across"), wxDefaultPosition, wxDefaultSize, 0);
+    wxStaticText* labelAveraging = new wxStaticText(sb_PlotSettings, wxID_ANY, _("Average spectrum plot across"), wxDefaultPosition, wxDefaultSize, 0);
     spectrumPanelControlSizer->Add(labelAveraging, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
     
     wxString samplingChoices[] = {
@@ -697,7 +700,7 @@ OptionsDlg::OptionsDlg(wxWindow* parent, wxWindowID id, const wxString& title, c
     m_cbxNumSpectrumAveraging->SetSelection(wxGetApp().appConfiguration.currentSpectrumAveraging);
     spectrumPanelControlSizer->Add(m_cbxNumSpectrumAveraging, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
     
-    wxStaticText* labelSamples = new wxStaticText(sb_PlotSettings, wxID_ANY, wxT("sample(s)"), wxDefaultPosition, wxDefaultSize, 0);
+    wxStaticText* labelSamples = new wxStaticText(sb_PlotSettings, wxID_ANY, _("sample(s)"), wxDefaultPosition, wxDefaultSize, 0);
     spectrumPanelControlSizer->Add(labelSamples, 0, static_cast<int>(wxALL) | wxALIGN_CENTER_VERTICAL, 5);
     
     sbSizer_PlotSettings->Add(spectrumPanelControlSizer, 0, static_cast<int>(wxALL) | static_cast<int>(wxEXPAND), 5);
@@ -908,6 +911,15 @@ OptionsDlg::OptionsDlg(wxWindow* parent, wxWindowID id, const wxString& title, c
 
     // Modem tab
     wxBoxSizer* sizerModem = new wxBoxSizer(wxVERTICAL);
+    
+    wxStaticBoxSizer* sbSizer_freedv700;
+    wxStaticBox *sb_freedv700 = new wxStaticBox(m_modemTab, wxID_ANY, _("Modem Options"));
+    sbSizer_freedv700 = new wxStaticBoxSizer(sb_freedv700, wxHORIZONTAL);
+
+    m_ckboxAutoStartOnLaunch = new wxCheckBox(sb_freedv700, wxID_ANY, _("Start Automatically on Launch"), wxDefaultPosition, wxDefaultSize, wxCHK_2STATE);
+    sbSizer_freedv700->Add(m_ckboxAutoStartOnLaunch, 0, static_cast<int>(wxALL) | wxALIGN_LEFT, 5);
+
+    sizerModem->Add(sbSizer_freedv700, 0, static_cast<int>(wxALL)|static_cast<int>(wxEXPAND), 5);
 
     //------------------------------
     // Half/Full duplex selection
@@ -1002,14 +1014,14 @@ OptionsDlg::OptionsDlg(wxWindow* parent, wxWindowID id, const wxString& title, c
 
     m_ckboxVerbose = new wxCheckBox(sb_fifo2, wxID_ANY, _("Verbose"), wxDefaultPosition, wxDefaultSize, wxCHK_2STATE);
     sbDebugOptionsSizer->Add(m_ckboxVerbose, 0, static_cast<int>(wxALL) | wxALIGN_LEFT, 5);   
-    m_ckboxTxRxThreadPriority = new wxCheckBox(sb_fifo2, wxID_ANY, _("txRxThreadPriority"), wxDefaultPosition, wxDefaultSize, wxCHK_2STATE);
+    m_ckboxTxRxThreadPriority = new wxCheckBox(sb_fifo2, wxID_ANY, wxT("txRxThreadPriority"), wxDefaultPosition, wxDefaultSize, wxCHK_2STATE);
     sbDebugOptionsSizer->Add(m_ckboxTxRxThreadPriority, 0, static_cast<int>(wxALL) | wxALIGN_LEFT, 5);
-    m_ckboxTxRxDumpTiming = new wxCheckBox(sb_fifo2, wxID_ANY, _("txRxDumpTiming"), wxDefaultPosition, wxDefaultSize, wxCHK_2STATE);
+    m_ckboxTxRxDumpTiming = new wxCheckBox(sb_fifo2, wxID_ANY, wxT("txRxDumpTiming"), wxDefaultPosition, wxDefaultSize, wxCHK_2STATE);
     sbDebugOptionsSizer->Add(m_ckboxTxRxDumpTiming, 0, static_cast<int>(wxALL) | wxALIGN_LEFT, 5);
     
-    m_ckboxTxRxDumpFifoState = new wxCheckBox(sb_fifo2, wxID_ANY, _("txRxDumpFifoState"), wxDefaultPosition, wxDefaultSize, wxCHK_2STATE);
+    m_ckboxTxRxDumpFifoState = new wxCheckBox(sb_fifo2, wxID_ANY, wxT("txRxDumpFifoState"), wxDefaultPosition, wxDefaultSize, wxCHK_2STATE);
     sbDebugOptionsSizer2->Add(m_ckboxTxRxDumpFifoState, 0, static_cast<int>(wxALL) | wxALIGN_LEFT, 5);   
-    m_ckboxFreeDVAPIVerbose = new wxCheckBox(sb_fifo2, wxID_ANY, _("APiVerbose"), wxDefaultPosition, wxDefaultSize, wxCHK_2STATE);
+    m_ckboxFreeDVAPIVerbose = new wxCheckBox(sb_fifo2, wxID_ANY, wxT("APiVerbose"), wxDefaultPosition, wxDefaultSize, wxCHK_2STATE);
     sbDebugOptionsSizer2->Add(m_ckboxFreeDVAPIVerbose, 0, static_cast<int>(wxALL) | wxALIGN_LEFT, 5);   
     
     m_experimentalFeatures = new wxCheckBox(sb_fifo2, wxID_ANY, _("Enable Experimental Features"), wxDefaultPosition, wxDefaultSize, wxCHK_2STATE);
@@ -1134,6 +1146,125 @@ OptionsDlg::OptionsDlg(wxWindow* parent, wxWindowID id, const wxString& title, c
     // Connect Events -------------------------------------------------------
 
     this->Connect(wxEVT_INIT_DIALOG, wxInitDialogEventHandler(OptionsDlg::OnInitDialog));
+
+    // Window names, used by GUI test scripts to find controls (see test/gui).
+    SetName("settings");
+    m_notebook->SetName("settings.notebook");
+    m_ckHalfDuplex->SetName("settings.ckHalfDuplex");
+    m_ckLeftChannelVoxTone->SetName("settings.ckLeftChannelVoxTone");
+    m_ckUseHamlibPTT->SetName("settings.ckUseHamlibPTT");
+    m_cbRigName->SetName("settings.cbRigName");
+    m_cbSerialPort->SetName("settings.cbSerialPort");
+    m_cbPttSerialPort->SetName("settings.cbPttSerialPort");
+    m_cbSerialRate->SetName("settings.cbSerialRate");
+    m_tcIcomCIVHex->SetName("settings.tcIcomCIVHex");
+    m_cbPttMethod->SetName("settings.cbPttMethod");
+    m_ckForceRTSOn->SetName("settings.ckForceRTSOn");
+    m_ckForceDTROn->SetName("settings.ckForceDTROn");
+    m_ckUseSerialPTT->SetName("settings.ckUseSerialPTT");
+    m_cbCtlDevicePath->SetName("settings.cbCtlDevicePath");
+    m_rbUseDTR->SetName("settings.rbUseDTR");
+    m_ckRTSPos->SetName("settings.ckRTSPos");
+    m_rbUseRTS->SetName("settings.rbUseRTS");
+    m_ckDTRPos->SetName("settings.ckDTRPos");
+    m_ckUsePTTInput->SetName("settings.ckUsePTTInput");
+    m_ckCTSPos->SetName("settings.ckCTSPos");
+    m_cbCtlDevicePathPttIn->SetName("settings.cbCtlDevicePathPttIn");
+    m_buttonTestPTT->SetName("settings.buttonTestPTT");
+    m_ckboxUseAnalogModes->SetName("settings.ckboxUseAnalogModes");
+    m_ckboxEnableFreqModeChanges->SetName("settings.ckboxEnableFreqModeChanges");
+    m_ckboxEnableFreqChangesOnly->SetName("settings.ckboxEnableFreqChangesOnly");
+    m_ckboxNoFreqModeChanges->SetName("settings.ckboxNoFreqModeChanges");
+    m_ckboxEnableSpacebarForPTT->SetName("settings.ckboxEnableSpacebarForPTT");
+    m_ckboxPTTMomentaryMode->SetName("settings.ckboxPTTMomentaryMode");
+    m_txtPTTKeyName->SetName("settings.txtPTTKeyName");
+    m_btnSetPTTKey->SetName("settings.btnSetPTTKey");
+    m_txtTxRxDelayMilliseconds->SetName("settings.txtTxRxDelayMilliseconds");
+    m_ckboxFrequencyEntryAsKHz->SetName("settings.ckboxFrequencyEntryAsKHz");
+    m_ckboxTOTTimerEnabled->SetName("settings.ckboxTOTTimerEnabled");
+    m_txtTOTTimerSecs->SetName("settings.txtTOTTimerSecs");
+    m_waterfallColorScheme1->SetName("settings.waterfallColorScheme1");
+    m_waterfallColorScheme2->SetName("settings.waterfallColorScheme2");
+    m_waterfallColorScheme3->SetName("settings.waterfallColorScheme3");
+    m_freedvReporterTxBackgroundColor->SetName("settings.freedvReporterTxBackgroundColor");
+    m_freedvReporterTxForegroundColor->SetName("settings.freedvReporterTxForegroundColor");
+    m_freedvReporterRxBackgroundColor->SetName("settings.freedvReporterRxBackgroundColor");
+    m_freedvReporterRxForegroundColor->SetName("settings.freedvReporterRxForegroundColor");
+    m_freedvReporterMsgBackgroundColor->SetName("settings.freedvReporterMsgBackgroundColor");
+    m_freedvReporterMsgForegroundColor->SetName("settings.freedvReporterMsgForegroundColor");
+    m_cbxNumSpectrumAveraging->SetName("settings.cbxNumSpectrumAveraging");
+    m_buttonChooseVoiceKeyerWaveFilePath->SetName("settings.buttonChooseVoiceKeyerWaveFilePath");
+    m_txtCtrlVoiceKeyerWaveFilePath->SetName("settings.txtCtrlVoiceKeyerWaveFilePath");
+    m_txtCtrlVoiceKeyerRxPause->SetName("settings.txtCtrlVoiceKeyerRxPause");
+    m_txtCtrlVoiceKeyerRepeats->SetName("settings.txtCtrlVoiceKeyerRepeats");
+    m_buttonChooseQuickRecordRawPath->SetName("settings.buttonChooseQuickRecordRawPath");
+    m_txtCtrlQuickRecordRawPath->SetName("settings.txtCtrlQuickRecordRawPath");
+    m_buttonChooseQuickRecordDecodedPath->SetName("settings.buttonChooseQuickRecordDecodedPath");
+    m_txtCtrlQuickRecordDecodedPath->SetName("settings.txtCtrlQuickRecordDecodedPath");
+    m_lcSoundCard1InDevice->SetName("settings.lcSoundCard1InDevice");
+    m_lcSoundCard1OutDevice->SetName("settings.lcSoundCard1OutDevice");
+    m_lcSoundCard2InDevice->SetName("settings.lcSoundCard2InDevice");
+    m_lcSoundCard2OutDevice->SetName("settings.lcSoundCard2OutDevice");
+    m_tcSoundCard1InDevice->SetName("settings.tcSoundCard1InDevice");
+    m_tcSoundCard1OutDevice->SetName("settings.tcSoundCard1OutDevice");
+    m_tcSoundCard2InDevice->SetName("settings.tcSoundCard2InDevice");
+    m_tcSoundCard2OutDevice->SetName("settings.tcSoundCard2OutDevice");
+    m_btnSoundCard1InTest->SetName("settings.btnSoundCard1InTest");
+    m_btnSoundCard1OutTest->SetName("settings.btnSoundCard1OutTest");
+    m_btnSoundCard2InTest->SetName("settings.btnSoundCard2InTest");
+    m_btnSoundCard2OutTest->SetName("settings.btnSoundCard2OutTest");
+    m_btnRefreshRxAudio->SetName("settings.btnRefreshRxAudio");
+    m_btnRefreshTxAudio->SetName("settings.btnRefreshTxAudio");
+    m_ckTxReceiveOnly->SetName("settings.ckTxReceiveOnly");
+    m_ckboxTone->SetName("settings.ckboxTone");
+    m_txtToneFreqHz->SetName("settings.txtToneFreqHz");
+    m_txtToneAmplitude->SetName("settings.txtToneAmplitude");
+    m_ckboxAutoStartOnLaunch->SetName("settings.ckboxAutoStartOnLaunch");
+    m_ckboxReportingEnable->SetName("settings.ckboxReportingEnable");
+    m_txt_callsign->SetName("settings.txt_callsign");
+    m_txt_grid_square->SetName("settings.txt_grid_square");
+    m_ckboxManualFrequencyReporting->SetName("settings.ckboxManualFrequencyReporting");
+    m_ckboxPskReporterEnable->SetName("settings.ckboxPskReporterEnable");
+    m_ckboxFreeDVReporterEnable->SetName("settings.ckboxFreeDVReporterEnable");
+    m_freedvReporterHostname->SetName("settings.freedvReporterHostname");
+    m_ckboxFreeDVReporterUseTls->SetName("settings.ckboxFreeDVReporterUseTls");
+    m_useMetricDistances->SetName("settings.useMetricDistances");
+    m_useCardinalDirections->SetName("settings.useCardinalDirections");
+    m_ckboxFreeDVReporterForceReceiveOnly->SetName("settings.ckboxFreeDVReporterForceReceiveOnly");
+    m_ckboxUDPReportingEnable->SetName("settings.ckboxUDPReportingEnable");
+    m_udpHostname->SetName("settings.udpHostname");
+    m_udpPort->SetName("settings.udpPort");
+    m_ckboxUDPBroadcastEnable->SetName("settings.ckboxUDPBroadcastEnable");
+    m_udpBroadcastAddress->SetName("settings.udpBroadcastAddress");
+    m_udpBroadcastPort->SetName("settings.udpBroadcastPort");
+    m_txtCtrlCsvLogFilePath->SetName("settings.txtCtrlCsvLogFilePath");
+    m_buttonChooseCsvLogFilePath->SetName("settings.buttonChooseCsvLogFilePath");
+    m_BtnFifoReset->SetName("settings.BtnFifoReset");
+    m_txtCtrlFifoSize->SetName("settings.txtCtrlFifoSize");
+    m_ckboxTxRxThreadPriority->SetName("settings.ckboxTxRxThreadPriority");
+    m_ckboxTxRxDumpTiming->SetName("settings.ckboxTxRxDumpTiming");
+    m_ckboxTxRxDumpFifoState->SetName("settings.ckboxTxRxDumpFifoState");
+    m_ckboxVerbose->SetName("settings.ckboxVerbose");
+    m_ckboxFreeDVAPIVerbose->SetName("settings.ckboxFreeDVAPIVerbose");
+    m_experimentalFeatures->SetName("settings.experimentalFeatures");
+    m_showDecodeStats->SetName("settings.showDecodeStats");
+    m_sdbSizer5OK->SetName("settings.sdbSizer5OK");
+    m_sdbSizer5Cancel->SetName("settings.sdbSizer5Cancel");
+    m_sdbSizer5Apply->SetName("settings.sdbSizer5Apply");
+    m_statsResetTime->SetName("settings.statsResetTime");
+    m_ckbox_use_utc_time->SetName("settings.ckbox_use_utc_time");
+    m_freqList->SetName("settings.freqList");
+    m_txtCtrlNewFrequency->SetName("settings.txtCtrlNewFrequency");
+    m_freqListAdd->SetName("settings.freqListAdd");
+    m_freqListRemove->SetName("settings.freqListRemove");
+    m_textFifos->SetName("settings.textFifos");
+    m_labelEnterFreq->SetName("settings.labelEnterFreq");
+    m_stIcomCIVHex->SetName("settings.stIcomCIVHex");
+#if defined(WIN32)
+    m_ckboxDebugConsole->SetName("settings.ckboxDebugConsole");
+    m_ckUseOmniRig->SetName("settings.ckUseOmniRig");
+    m_cbOmniRigRigId->SetName("settings.cbOmniRigRigId");
+#endif // defined(WIN32)
 
     m_sdbSizer5OK->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(OptionsDlg::OnOK), NULL, this);
     m_sdbSizer5Cancel->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(OptionsDlg::OnCancel), NULL, this);
@@ -1429,20 +1560,22 @@ void OptionsDlg::ExchangeData(int inout, bool storePersistent)
         m_ckHalfDuplex->SetValue(wxGetApp().appConfiguration.halfDuplexMode);
 
         m_ckboxTone->SetValue(wxGetApp().m_tone);
-        m_txtToneFreqHz->SetValue(wxString::Format(wxT("%i"),wxGetApp().m_tone_freq_hz));
-        m_txtToneAmplitude->SetValue(wxString::Format(wxT("%i"),wxGetApp().m_tone_amplitude));
+        m_txtToneFreqHz->SetValue(wxString::Format(wxT("%i"),wxGetApp().m_tone_freq_hz.load(std::memory_order_acquire)));
+        m_txtToneAmplitude->SetValue(wxString::Format(wxT("%i"),wxGetApp().m_tone_amplitude.load(std::memory_order_acquire)));
 
         m_txtCtrlFifoSize->SetValue(wxString::Format(wxT("%i"),wxGetApp().appConfiguration.fifoSizeMs.get()));
 
         m_ckboxTxRxThreadPriority->SetValue(wxGetApp().m_txRxThreadHighPriority);
-        m_ckboxTxRxDumpTiming->SetValue(g_dump_timing);
-        m_ckboxTxRxDumpFifoState->SetValue(g_dump_fifo_state);
+        m_ckboxTxRxDumpTiming->SetValue(g_dump_timing.load(std::memory_order_relaxed));
+        m_ckboxTxRxDumpFifoState->SetValue(g_dump_fifo_state.load(std::memory_order_relaxed));
         m_ckboxVerbose->SetValue(wxGetApp().appConfiguration.debugVerbose);
         m_ckboxFreeDVAPIVerbose->SetValue(g_freedv_verbose);
         m_showDecodeStats->SetValue(wxGetApp().appConfiguration.showDecodeStats);
-        
+
         m_experimentalFeatures->SetValue(wxGetApp().appConfiguration.experimentalFeatures);
-        
+
+        m_ckboxAutoStartOnLaunch->SetValue(wxGetApp().appConfiguration.autoStartOnLaunch);
+
 #ifdef __WXMSW__
         m_ckboxDebugConsole->SetValue(wxGetApp().appConfiguration.debugConsoleEnabled);
 #endif
@@ -1519,11 +1652,11 @@ void OptionsDlg::ExchangeData(int inout, bool storePersistent)
         
         if (wxGetApp().appConfiguration.reportingConfiguration.reportingFrequencyAsKhz)
         {
-            m_labelEnterFreq->SetLabel(wxT("Enter frequency (kHz):"));
+            m_labelEnterFreq->SetLabel(_("Enter frequency (kHz):"));
         }
         else
         {
-            m_labelEnterFreq->SetLabel(wxT("Enter frequency (MHz):"));
+            m_labelEnterFreq->SetLabel(_("Enter frequency (MHz):"));
         }
         
         // Update control state based on checkbox state.
@@ -1616,10 +1749,10 @@ void OptionsDlg::ExchangeData(int inout, bool storePersistent)
                 return 0;
             };
 
-            wxString sc1in   = m_tcSoundCard1InDevice->GetValue();
-            wxString spk     = m_tcSoundCard1OutDevice->GetValue(); // "Output From Computer To Speaker/Headphones"
-            wxString sc2in   = m_tcSoundCard2InDevice->GetValue();
-            wxString radioTx = m_tcSoundCard2OutDevice->GetValue(); // "Output From Computer To Radio"
+            wxString sc1in   = getSelectedAudioDeviceName(m_tcSoundCard1InDevice);
+            wxString spk     = getSelectedAudioDeviceName(m_tcSoundCard1OutDevice); // "Output From Computer To Speaker/Headphones"
+            wxString sc2in   = getSelectedAudioDeviceName(m_tcSoundCard2InDevice);
+            wxString radioTx = getSelectedAudioDeviceName(m_tcSoundCard2OutDevice); // "Output From Computer To Radio"
 
             if (m_ckTxReceiveOnly->GetValue())
             {
@@ -1659,8 +1792,8 @@ void OptionsDlg::ExchangeData(int inout, bool storePersistent)
         wxGetApp().appConfiguration.fifoSizeMs = (int)FifoSize_ms;
 
         wxGetApp().m_txRxThreadHighPriority = m_ckboxTxRxThreadPriority->GetValue();
-        g_dump_timing = m_ckboxTxRxDumpTiming->GetValue();
-        g_dump_fifo_state = m_ckboxTxRxDumpFifoState->GetValue();
+        g_dump_timing.store(m_ckboxTxRxDumpTiming->GetValue(), std::memory_order_relaxed);
+        g_dump_fifo_state.store(m_ckboxTxRxDumpFifoState->GetValue(), std::memory_order_relaxed);
         wxGetApp().appConfiguration.debugVerbose = m_ckboxVerbose->GetValue();
         if (wxGetApp().appConfiguration.debugVerbose)
         {
@@ -1674,10 +1807,12 @@ void OptionsDlg::ExchangeData(int inout, bool storePersistent)
 
         wxGetApp().appConfiguration.showDecodeStats = m_showDecodeStats->GetValue();
         
+        wxGetApp().appConfiguration.autoStartOnLaunch = m_ckboxAutoStartOnLaunch->GetValue();
+
 #ifdef __WXMSW__
         wxGetApp().appConfiguration.debugConsoleEnabled = m_ckboxDebugConsole->GetValue();
 #endif
-        
+
         wxGetApp().appConfiguration.experimentalFeatures = m_experimentalFeatures->GetValue();
 
         // General reporting config
@@ -1852,7 +1987,7 @@ void OptionsDlg::OnApply(wxCommandEvent&)
         else
         {
             freqDouble /= 1000.0;
-            m_txtCtrlNewFrequency->SetValue(wxNumberFormatter::ToString(freqDouble, 1));
+            m_txtCtrlNewFrequency->SetValue(wxNumberFormatter::ToString(freqDouble, 4));
         }
     }
         
@@ -1874,15 +2009,16 @@ void OptionsDlg::OnInitDialog(wxInitDialogEvent&)
 void OptionsDlg::OnChooseVoiceKeyerWaveFilePath(wxCommandEvent&) {
     wxDirDialog pathDialog(
                                 this,
-                                wxT("Voice Keyer file location"),
+                                _("Voice Keyer file location"),
                                 wxGetApp().appConfiguration.voiceKeyerWaveFilePath
                                 );
                                 
-    if(pathDialog.ShowModal() == wxID_CANCEL) {
+    wxString path;
+    if(ShowPathDialog(pathDialog, path) == wxID_CANCEL) {
         return;     // the user changed their mind...
     }
     
-    m_txtCtrlVoiceKeyerWaveFilePath->SetValue(pathDialog.GetPath());
+    m_txtCtrlVoiceKeyerWaveFilePath->SetValue(path);
 }
 
 void OptionsDlg::OnChooseQuickRecordPath(wxCommandEvent& event) {
@@ -1892,38 +2028,40 @@ void OptionsDlg::OnChooseQuickRecordPath(wxCommandEvent& event) {
         wxGetApp().appConfiguration.quickRecordDecodedPath;
      wxDirDialog pathDialog(
                                  this,
-                                 wxT("Choose Quick Record save location"),
+                                 _("Choose Quick Record save location"),
                                  defaultLocation
                                  );
-     if(pathDialog.ShowModal() == wxID_CANCEL) {
+     wxString path;
+     if(ShowPathDialog(pathDialog, path) == wxID_CANCEL) {
          return;     // the user changed their mind...
      }
 
      if (event.GetEventObject() == m_buttonChooseQuickRecordRawPath)
      {
-        m_txtCtrlQuickRecordRawPath->SetValue(pathDialog.GetPath());
+        m_txtCtrlQuickRecordRawPath->SetValue(path);
      }
      else
      {
-        m_txtCtrlQuickRecordDecodedPath->SetValue(pathDialog.GetPath());
+        m_txtCtrlQuickRecordDecodedPath->SetValue(path);
      }
 }
 
 void OptionsDlg::OnChooseCsvLogFilePath(wxCommandEvent&) {
     wxFileDialog fileDialog(
         this,
-        wxT("Choose CSV log file location"),
+        _("Choose CSV log file location"),
         wxPathOnly(m_txtCtrlCsvLogFilePath->GetValue()),
         wxFileNameFromPath(m_txtCtrlCsvLogFilePath->GetValue()),
-        wxT("CSV files (*.csv)|*.csv|All files (*.*)|*.*"),
+        _("CSV files (*.csv)") + wxT("|*.csv|") + _("All files (*.*)") + wxT("|*.*"),
         wxFD_SAVE | wxFD_OVERWRITE_PROMPT
     );
 
-    if (fileDialog.ShowModal() == wxID_CANCEL) {
+    wxString path;
+    if (ShowPathDialog(fileDialog, path) == wxID_CANCEL) {
         return;
     }
 
-    m_txtCtrlCsvLogFilePath->SetValue(fileDialog.GetPath());
+    m_txtCtrlCsvLogFilePath->SetValue(path);
 }
 
 void OptionsDlg::OnDebugConsole(wxScrollEvent&) {
@@ -1942,12 +2080,13 @@ void OptionsDlg::OnDebugConsole(wxScrollEvent&) {
 
 void OptionsDlg::OnFifoReset(wxCommandEvent&)
 {
-    g_infifo1_full.store(0, std::memory_order_release);
-    g_outfifo1_empty.store(0, std::memory_order_release);
-    g_infifo2_full.store(0, std::memory_order_release);
-    g_outfifo2_empty.store(0, std::memory_order_release);
+    g_infifo1_full.store(0, std::memory_order_relaxed);
+    g_outfifo1_empty.store(0, std::memory_order_relaxed);
+    g_infifo2_full.store(0, std::memory_order_relaxed);
+    g_outfifo2_empty.store(0, std::memory_order_relaxed);
     for (int i=0; i<4; i++) {
-        g_AEstatus1[i] = g_AEstatus2[i] = 0;
+        g_AEstatus1[i].store(0, std::memory_order_relaxed);
+        g_AEstatus2[i].store(0, std::memory_order_relaxed);
     }
 }
 
@@ -2166,15 +2305,15 @@ void OptionsDlg::exitPTTCaptureMode_(bool accept, int keyCode)
 void OptionsDlg::DisplayFifoPACounters() {
     if (IsShownOnScreen())
     {
-        wxString fifo_counters = wxString::Format(wxT("Fifos: infull1: %d outempty1: %d infull2: %d outempty2: %d"), g_infifo1_full.load(std::memory_order_acquire), g_outfifo1_empty.load(std::memory_order_acquire), g_infifo2_full.load(std::memory_order_acquire), g_outfifo2_empty.load(std::memory_order_acquire));
+        wxString fifo_counters = wxString::Format(wxT("Fifos: infull1: %d outempty1: %d infull2: %d outempty2: %d"), g_infifo1_full.load(std::memory_order_relaxed), g_outfifo1_empty.load(std::memory_order_relaxed), g_infifo2_full.load(std::memory_order_relaxed), g_outfifo2_empty.load(std::memory_order_relaxed));
         m_textFifos->SetLabel(fifo_counters);
 
         // input: underflow overflow output: underflow overflow
-        wxString pa_counters_1 = wxString::Format(wxT("Audio1: inUnderflow: %d inOverflow: %d outUnderflow %d outOverflow %d"), g_AEstatus1[0], g_AEstatus1[1], g_AEstatus1[2], g_AEstatus1[3]);
+        wxString pa_counters_1 = wxString::Format(wxT("Audio1: inUnderflow: %d inOverflow: %d outUnderflow %d outOverflow %d"), g_AEstatus1[0].load(std::memory_order_relaxed), g_AEstatus1[1].load(std::memory_order_relaxed), g_AEstatus1[2].load(std::memory_order_relaxed), g_AEstatus1[3].load(std::memory_order_relaxed));
         m_textPA1->SetLabel(pa_counters_1);
 
         // input: underflow overflow output: underflow overflow
-        wxString pa_counters_2 = wxString::Format(wxT("Audio2: inUnderflow: %d inOverflow: %d outUnderflow %d outOverflow %d"), g_AEstatus2[0], g_AEstatus2[1], g_AEstatus2[2], g_AEstatus2[3]);
+        wxString pa_counters_2 = wxString::Format(wxT("Audio2: inUnderflow: %d inOverflow: %d outUnderflow %d outOverflow %d"), g_AEstatus2[0].load(std::memory_order_relaxed), g_AEstatus2[1].load(std::memory_order_relaxed), g_AEstatus2[2].load(std::memory_order_relaxed), g_AEstatus2[3].load(std::memory_order_relaxed));
         m_textPA2->SetLabel(pa_counters_2);
     }
 }
@@ -2229,19 +2368,11 @@ void OptionsDlg::OnReportingFreqAdd(wxCommandEvent&)
     {
         val = wxNumberFormatter::ToString(dVal, 4);
     }
-    // Keep the list in ascending numeric order so newly added entries land
-    // in their correct position rather than always at the end.
-    unsigned int insertIdx = 0;
-    for (; insertIdx < m_freqList->GetCount(); insertIdx++)
-    {
-        double existing = 0;
-        wxNumberFormatter::FromString(m_freqList->GetString(insertIdx), &existing);
-        if (existing > dVal)
-        {
-            break;
-        }
-    }
-    m_freqList->Insert(val, insertIdx);
+    // Keep the list in ascending order: a new entry goes straight into its
+    // place rather than at the end.
+    auto strings = m_freqList->GetStrings();
+    std::vector<wxString> list(strings.begin(), strings.end());
+    m_freqList->Insert(val, ReportingConfiguration::SortedFrequencyIndex(list, dVal));
     m_txtCtrlNewFrequency->SetValue("");
 }
 
@@ -2444,7 +2575,8 @@ void OptionsDlg::updateRadioControlState()
     m_sdbSizer5Cancel->Enable(!isTesting_);
     m_sdbSizer5Apply->Enable(!isTesting_);
 
-    if (m_cbPttMethod->GetValue() == _("CAT") || m_cbPttMethod->GetValue() == _("None"))
+    // A separate serial device for PTT only applies when keying with RTS or DTR.
+    if (m_cbPttMethod->GetSelection() != HamlibRigController::PTT_VIA_RTS && m_cbPttMethod->GetSelection() != HamlibRigController::PTT_VIA_DTR)
         m_cbPttSerialPort->Enable(false);
 }
 
@@ -2491,7 +2623,7 @@ void OptionsDlg::HamlibRigNameChanged(wxCommandEvent&)
 
 void OptionsDlg::OnHamlibSerialPortChanged(wxCommandEvent&)
 {
-    if (m_cbPttMethod->GetValue() == _("CAT"))
+    if (m_cbPttMethod->GetSelection() == HamlibRigController::PTT_VIA_CAT)
         m_cbPttSerialPort->SetValue(m_cbSerialPort->GetValue());
 }
 
@@ -2505,9 +2637,21 @@ void OptionsDlg::OnTestPTT(wxCommandEvent&)
     std::shared_ptr<std::mutex> mtx = std::make_shared<std::mutex>();
     std::shared_ptr<std::condition_variable> cv = std::make_shared<std::condition_variable>();
 
+    // Says the test is over. Kept track of, rather than only signalled: a
+    // port that can't be opened says so before the thread below has
+    // started waiting for it, and that thread would otherwise wait forever.
+    std::shared_ptr<bool> finished = std::make_shared<bool>(false);
+    auto finish = [mtx, cv, finished]() {
+        {
+            std::unique_lock<std::mutex> lk(*mtx);
+            *finished = true;
+        }
+        cv->notify_one();
+    };
+
     if (m_ckLeftChannelVoxTone->GetValue()) {
-        wxMessageBox("Testing of tone based PTT not supported; try PTT after pressing Start on main window",
-                     wxT("Error"), wxOK | wxICON_ERROR, this);
+        wxMessageBox(_("Testing of tone based PTT not supported; try PTT after pressing Start on main window"),
+                     _("Error"), wxOK | wxICON_ERROR, this);
     }
 
     isTesting_ = true;
@@ -2541,21 +2685,22 @@ void OptionsDlg::OnTestPTT(wxCommandEvent&)
 
             hamlib->onRigError += [=, this](IRigController*, std::string const& error) {
                 CallAfter([=, this]() {
-                    wxMessageBox(wxString::Format("Couldn't connect to Radio with Hamlib (%s). Make sure the Hamlib serial Device, Rate, and Params match your radio", error),
-                        wxT("Error"), wxOK | wxICON_ERROR, this);
-                    cv->notify_one();
+                    // TRANSLATORS: %s is the error message returned by Hamlib.
+                    wxMessageBox(wxString::Format(_("Couldn't connect to Radio with Hamlib (%s). Make sure the Hamlib serial Device, Rate, and Params match your radio"), error),
+                        _("Error"), wxOK | wxICON_ERROR, this);
+                    finish();
                 });
             };
             hamlib->onRigConnected += [=](IRigController*) { hamlib->ptt(true); };
             hamlib->onPttChange += [=](IRigController*, bool state) {
                 if (state) { std::this_thread::sleep_for(1s); hamlib->ptt(false); }
-                else        { cv->notify_one(); }
+                else        { finish(); }
             };
 
             std::thread([=, this]() {
                 hamlib->connect();
                 std::unique_lock<std::mutex> lk(*mtx);
-                cv->wait(lk);
+                cv->wait(lk, [finished]() { return *finished; });
                 hamlib->disconnect();
                 CallAfter([this]() { isTesting_ = false; updateRadioControlState(); });
             }).detach();
@@ -2574,17 +2719,18 @@ void OptionsDlg::OnTestPTT(wxCommandEvent&)
 
             serialPort->onRigError += [=, this](IRigController*, std::string const& error) {
                 CallAfter([=, this]() {
-                    wxMessageBox(wxString::Format("Couldn't open serial port %s (%s). This is likely due to not having permission to access the chosen port.", ctrlport, error),
-                        wxT("Error"), wxOK | wxICON_ERROR, this);
+                    // TRANSLATORS: The first %s is the serial port and the second is the error message returned by the operating system.
+                    wxMessageBox(wxString::Format(_("Couldn't open serial port %s (%s). This is likely due to not having permission to access the chosen port."), ctrlport, error),
+                        _("Error"), wxOK | wxICON_ERROR, this);
                 });
-                cv->notify_one();
+                finish();
             };
-            serialPort->onRigConnected += [=](IRigController*) { cv->notify_one(); };
+            serialPort->onRigConnected += [=](IRigController*) { finish(); };
 
             std::thread([=, this]() {
                 serialPort->connect();
                 std::unique_lock<std::mutex> lk(*mtx);
-                cv->wait(lk);
+                cv->wait(lk, [finished]() { return *finished; });
                 if (serialPort->isConnected()) {
                     serialPort->ptt(true);
                     wxSleep(1);
@@ -2605,21 +2751,22 @@ void OptionsDlg::OnTestPTT(wxCommandEvent&)
 
         omniRig->onRigError += [=, this](IRigController*, std::string error) {
             CallAfter([=, this]() {
-                wxMessageBox(wxString::Format("Couldn't connect to Radio with OmniRig (%s). Make sure the rig ID and OmniRig configuration is correct.", error),
-                    wxT("Error"), wxOK | wxICON_ERROR, this);
-                cv->notify_one();
+                // TRANSLATORS: %s is the error message returned by OmniRig.
+                wxMessageBox(wxString::Format(_("Couldn't connect to Radio with OmniRig (%s). Make sure the rig ID and OmniRig configuration is correct."), error),
+                    _("Error"), wxOK | wxICON_ERROR, this);
+                finish();
             });
         };
         omniRig->onRigConnected += [=](IRigController*) { omniRig->ptt(true); };
         omniRig->onPttChange += [=](IRigController*, bool state) {
             if (state) { std::this_thread::sleep_for(1s); omniRig->ptt(false); }
-            else        { cv->notify_one(); }
+            else        { finish(); }
         };
 
         std::thread([=, this]() {
             omniRig->connect();
             std::unique_lock<std::mutex> lk(*mtx);
-            cv->wait(lk);
+            cv->wait(lk, [finished]() { return *finished; });
             omniRig->disconnect();
             CallAfter([this]() { isTesting_ = false; updateRadioControlState(); });
         }).detach();
@@ -2652,13 +2799,18 @@ void OptionsDlg::populateAudioDeviceList(wxListCtrl* list, IAudioEngine::AudioDi
     auto devList = engine->getAudioDeviceList(direction);
     engine->stop();
 
+    auto& names = audioDeviceNames_[list];
+    names.clear();
     for (auto& dev : devList)
     {
-        long idx = list->InsertItem(list->GetItemCount(), dev.name);
+        long idx = list->InsertItem(list->GetItemCount(), dev.getDisplayName());
         list->SetItem(idx, 1, dev.apiName);
         list->SetItem(idx, 2, wxString::Format("%d Hz", dev.defaultSampleRate));
+        names.push_back(dev.name);
     }
-    list->InsertItem(list->GetItemCount(), "none");
+    // TRANSLATORS: Shown in the audio device lists to indicate that no device is selected.
+    list->InsertItem(list->GetItemCount(), _("none"));
+    names.push_back("none");
 
     list->SetColumnWidth(0, wxLIST_AUTOSIZE_USEHEADER);
     list->SetColumnWidth(1, wxLIST_AUTOSIZE_USEHEADER);
@@ -2680,38 +2832,57 @@ void OptionsDlg::populateAudioDeviceList(wxListCtrl* list, IAudioEngine::AudioDi
 void OptionsDlg::selectListDevice(wxListCtrl* list, wxTextCtrl* tc, const wxString& devName)
 {
     wxString target = devName.IsEmpty() ? wxString("none") : devName;
-    for (long i = 0; i < list->GetItemCount(); i++)
+    auto& names = audioDeviceNames_[list];
+    for (long i = 0; i < list->GetItemCount() && i < (long)names.size(); i++)
     {
-        if (list->GetItemText(i, 0).IsSameAs(target))
+        if (names[i].IsSameAs(target))
         {
             list->SetItemState(i, wxLIST_STATE_SELECTED | wxLIST_STATE_FOCUSED,
                                   wxLIST_STATE_SELECTED | wxLIST_STATE_FOCUSED);
             list->EnsureVisible(i);
-            tc->SetValue(target);
+            onAudioDeviceSelected(list, tc, i);
             return;
         }
     }
     tc->SetValue(wxEmptyString);
+    tc->SetClientObject(nullptr);
+}
+
+//-------------------------------------------------------------------------
+// onAudioDeviceSelected() - shows the user-friendly name of the selected
+// device while retaining its internal name for saving to the config.
+//-------------------------------------------------------------------------
+void OptionsDlg::onAudioDeviceSelected(wxListCtrl* list, wxTextCtrl* tc, long index)
+{
+    auto& names = audioDeviceNames_[list];
+    tc->SetValue(list->GetItemText(index, 0));
+    tc->SetClientObject(index < (long)names.size() ? new wxStringClientData(names[index]) : nullptr);
+}
+
+wxString OptionsDlg::getSelectedAudioDeviceName(wxTextCtrl* tc)
+{
+    auto data = static_cast<wxStringClientData*>(tc->GetClientObject());
+    return data != nullptr ? data->GetData() : wxString(wxEmptyString);
 }
 
 void OptionsDlg::OnSoundCard1InDeviceSelect(wxListEvent& evt)
 {
-    m_tcSoundCard1InDevice->SetValue(m_lcSoundCard1InDevice->GetItemText(evt.GetIndex(), 0));
+    onAudioDeviceSelected(m_lcSoundCard1InDevice, m_tcSoundCard1InDevice, evt.GetIndex());
 }
 
 void OptionsDlg::OnSoundCard1OutDeviceSelect(wxListEvent& evt)
 {
-    m_tcSoundCard1OutDevice->SetValue(m_lcSoundCard1OutDevice->GetItemText(evt.GetIndex(), 0));
+    onAudioDeviceSelected(m_lcSoundCard1OutDevice, m_tcSoundCard1OutDevice, evt.GetIndex());
 }
 
 void OptionsDlg::OnSoundCard2InDeviceSelect(wxListEvent& evt)
 {
-    m_tcSoundCard2InDevice->SetValue(m_lcSoundCard2InDevice->GetItemText(evt.GetIndex(), 0));
+    onAudioDeviceSelected(m_lcSoundCard2InDevice, m_tcSoundCard2InDevice, evt.GetIndex());
 }
 
 void OptionsDlg::OnSoundCard2OutDeviceSelect(wxListEvent& evt)
 {
-    m_tcSoundCard2OutDevice->SetValue(m_lcSoundCard2OutDevice->GetItemText(evt.GetIndex(), 0));
+    onAudioDeviceSelected(m_lcSoundCard2OutDevice, m_tcSoundCard2OutDevice, evt.GetIndex());
 }
 
 void OptionsDlg::OnTxReceiveOnlyChanged(wxCommandEvent&)
@@ -2728,10 +2899,10 @@ void OptionsDlg::OnTxReceiveOnlyChanged(wxCommandEvent&)
 void OptionsDlg::OnRefreshAudioDevices(wxCommandEvent&)
 {
     // Preserve the user's current selections so they survive the repopulation
-    wxString sel1In  = m_tcSoundCard1InDevice->GetValue();
-    wxString sel1Out = m_tcSoundCard1OutDevice->GetValue();
-    wxString sel2In  = m_tcSoundCard2InDevice->GetValue();
-    wxString sel2Out = m_tcSoundCard2OutDevice->GetValue();
+    wxString sel1In  = getSelectedAudioDeviceName(m_tcSoundCard1InDevice);
+    wxString sel1Out = getSelectedAudioDeviceName(m_tcSoundCard1OutDevice);
+    wxString sel2In  = getSelectedAudioDeviceName(m_tcSoundCard2InDevice);
+    wxString sel2Out = getSelectedAudioDeviceName(m_tcSoundCard2OutDevice);
 
     // Restart engine so it re-enumerates available devices
     auto engine = AudioEngineFactory::GetAudioEngine();
@@ -2951,10 +3122,9 @@ void OptionsDlg::testAudioInput(const wxString& inDevName, const wxString& outDe
 //-------------------------------------------------------------------------
 void OptionsDlg::OnSoundCard1InTest(wxCommandEvent&)
 {
-    wxString outDev = m_tcSoundCard2OutDevice->GetValue();
-    if (outDev.IsEmpty() || outDev == "none")
-        outDev = m_tcSoundCard1OutDevice->GetValue();
-    testAudioInput(m_tcSoundCard1InDevice->GetValue(), outDev, m_btnSoundCard1InTest);
+    // What's recorded is played back through the speaker/headphones (which,
+    // in this window, is always the first output device) so that it can be heard.
+    testAudioInput(getSelectedAudioDeviceName(m_tcSoundCard1InDevice), getSelectedAudioDeviceName(m_tcSoundCard1OutDevice), m_btnSoundCard1InTest);
 }
 
 //-------------------------------------------------------------------------
@@ -2962,7 +3132,7 @@ void OptionsDlg::OnSoundCard1InTest(wxCommandEvent&)
 //-------------------------------------------------------------------------
 void OptionsDlg::OnSoundCard1OutTest(wxCommandEvent&)
 {
-    testAudioOutput(m_tcSoundCard1OutDevice->GetValue(), m_btnSoundCard1OutTest);
+    testAudioOutput(getSelectedAudioDeviceName(m_tcSoundCard1OutDevice), m_btnSoundCard1OutTest);
 }
 
 //-------------------------------------------------------------------------
@@ -2970,7 +3140,8 @@ void OptionsDlg::OnSoundCard1OutTest(wxCommandEvent&)
 //-------------------------------------------------------------------------
 void OptionsDlg::OnSoundCard2InTest(wxCommandEvent&)
 {
-    testAudioInput(m_tcSoundCard2InDevice->GetValue(), m_tcSoundCard2OutDevice->GetValue(), m_btnSoundCard2InTest);
+    // Played back through the speaker/headphones, not the radio.
+    testAudioInput(getSelectedAudioDeviceName(m_tcSoundCard2InDevice), getSelectedAudioDeviceName(m_tcSoundCard1OutDevice), m_btnSoundCard2InTest);
 }
 
 //-------------------------------------------------------------------------
@@ -2978,5 +3149,5 @@ void OptionsDlg::OnSoundCard2InTest(wxCommandEvent&)
 //-------------------------------------------------------------------------
 void OptionsDlg::OnSoundCard2OutTest(wxCommandEvent&)
 {
-    testAudioOutput(m_tcSoundCard2OutDevice->GetValue(), m_btnSoundCard2OutTest);
+    testAudioOutput(getSelectedAudioDeviceName(m_tcSoundCard2OutDevice), m_btnSoundCard2OutTest);
 }

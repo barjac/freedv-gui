@@ -55,19 +55,18 @@ extern FreeDVInterface freedvInterface;
 extern wxConfigBase *pConfig;
 extern wxMutex g_mutexProtectingCallbackData;
 extern std::atomic<bool> g_agcEnabled;
+extern std::atomic<bool> g_noiseReductionEnabled;
 extern std::atomic<bool> g_bwExpandEnabled;
 
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=--=-=-=-=
 // Class FilterDlg
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=--=-=-=-=
-FilterDlg::FilterDlg(wxWindow* parent, bool running, bool *newMicInFilter, bool *newSpkOutFilter,
+FilterDlg::FilterDlg(wxWindow* parent, bool running, std::atomic<bool> *newMicInFilter, std::atomic<bool> *newSpkOutFilter,
                      wxWindowID id, const wxString& title, const wxPoint& pos, const wxSize& size, long style) : wxDialog(parent, id, title, pos, size, style)
 {
     volsChanged_ = false;
 
-    // XXX - FreeDV only supports English but makes a best effort to at least use regional formatting
-    // for e.g. numbers. Thus, we only need to override layout direction.
-    SetLayoutDirection(wxLayout_LeftToRight);
+    WXWIDGETS_SET_LAYOUT_DIRECTION;
     
     if (wxGetApp().customConfigFileName != "")
     {
@@ -127,20 +126,20 @@ FilterDlg::FilterDlg(wxWindow* parent, bool running, bool *newMicInFilter, bool 
     
     m_MicInEnable = new wxCheckBox(panelMicInEqualizer, wxID_ANY, _("Enable"), wxDefaultPosition,wxDefaultSize, wxCHK_2STATE);
     eqMicInSizerEnable->Add(m_MicInEnable,0,wxALIGN_CENTRE_VERTICAL|static_cast<int>(wxALL),5);
-    m_MicInDefault = new wxButton(panelMicInEqualizer, wxID_ANY, wxT("Default"));
+    m_MicInDefault = new wxButton(panelMicInEqualizer, wxID_ANY, _("Default"));
     eqMicInSizerEnable->Add(m_MicInDefault,0,static_cast<int>(wxALL) | wxALIGN_CENTRE_VERTICAL,5);
     eqMicInSizer->Add(eqMicInSizerEnable,0,static_cast<int>(wxEXPAND));
     
-    m_MicInVol    = newEQ(panelMicInEqualizer, eqMicInSizerVol, "Vol", MAX_FREQ_TREBLE, disableQ, disableFreq, SLIDER_MAX_FREQ);
+    m_MicInVol    = newEQ(panelMicInEqualizer, eqMicInSizerVol, _("Vol"), MAX_FREQ_TREBLE, disableQ, disableFreq, SLIDER_MAX_FREQ);
     eqMicInSizerSliders->Add(eqMicInSizerVol, 1, static_cast<int>(wxALL), 7);
     
-    m_MicInBass   = newEQ(panelMicInEqualizer, eqMicInSizerBass, "Bass", MAX_FREQ_BASS, disableQ, enableFreq, SLIDER_MAX_FREQ_BASS);
+    m_MicInBass   = newEQ(panelMicInEqualizer, eqMicInSizerBass, _("Bass"), MAX_FREQ_BASS, disableQ, enableFreq, SLIDER_MAX_FREQ_BASS);
     eqMicInSizerSliders->Add(eqMicInSizerBass, 1, static_cast<int>(wxALL), 7);
     
-    m_MicInMid    = newEQ(panelMicInEqualizer, eqMicInSizerMid, "Mid", MAX_FREQ_DEF, enableQ, enableFreq, SLIDER_MAX_FREQ);
+    m_MicInMid    = newEQ(panelMicInEqualizer, eqMicInSizerMid, _("Mid"), MAX_FREQ_DEF, enableQ, enableFreq, SLIDER_MAX_FREQ);
     eqMicInSizerSliders->Add(eqMicInSizerMid, 1, static_cast<int>(wxALL), 7);
         
-    m_MicInTreble = newEQ(panelMicInEqualizer, eqMicInSizerTreble, "Treble", MAX_FREQ_TREBLE, disableQ, enableFreq, SLIDER_MAX_FREQ);
+    m_MicInTreble = newEQ(panelMicInEqualizer, eqMicInSizerTreble, _("Treble"), MAX_FREQ_TREBLE, disableQ, enableFreq, SLIDER_MAX_FREQ);
     eqMicInSizerSliders->Add(eqMicInSizerTreble, 1, static_cast<int>(wxALL), 7);
 
     eqMicInSizer->Add(eqMicInSizerSliders, 0, static_cast<int>(wxEXPAND), 0);
@@ -155,20 +154,20 @@ FilterDlg::FilterDlg(wxWindow* parent, bool running, bool *newMicInFilter, bool 
 
     m_SpkOutEnable = new wxCheckBox(panelSpkOutEqualizer, wxID_ANY, _("Enable"), wxDefaultPosition,wxDefaultSize, wxCHK_2STATE);
     eqSpkOutSizerEnable->Add(m_SpkOutEnable,0,wxALIGN_CENTRE_VERTICAL|static_cast<int>(wxALL),5);
-    m_SpkOutDefault = new wxButton(panelSpkOutEqualizer, wxID_ANY, wxT("Default"));
+    m_SpkOutDefault = new wxButton(panelSpkOutEqualizer, wxID_ANY, _("Default"));
     eqSpkOutSizerEnable->Add(m_SpkOutDefault,0,static_cast<int>(wxALL) | wxALIGN_CENTRE_VERTICAL,5);
     eqSpkOutSizer->Add(eqSpkOutSizerEnable,0,static_cast<int>(wxEXPAND));
     
-    m_SpkOutVol    = newEQ(panelSpkOutEqualizer, eqSpkOutSizerVol, "Vol", MAX_FREQ_TREBLE, disableQ, disableFreq, SLIDER_MAX_FREQ);
+    m_SpkOutVol    = newEQ(panelSpkOutEqualizer, eqSpkOutSizerVol, _("Vol"), MAX_FREQ_TREBLE, disableQ, disableFreq, SLIDER_MAX_FREQ);
     eqSpkOutSizerSliders->Add(eqSpkOutSizerVol, 1, static_cast<int>(wxALL), 7);
     
-    m_SpkOutBass   = newEQ(panelSpkOutEqualizer, eqSpkOutSizerBass, "Bass"  , MAX_FREQ_BASS, disableQ, enableFreq, SLIDER_MAX_FREQ_BASS);
+    m_SpkOutBass   = newEQ(panelSpkOutEqualizer, eqSpkOutSizerBass, _("Bass")  , MAX_FREQ_BASS, disableQ, enableFreq, SLIDER_MAX_FREQ_BASS);
     eqSpkOutSizerSliders->Add(eqSpkOutSizerBass, 1, static_cast<int>(wxALL), 7);
     
-    m_SpkOutMid    = newEQ(panelSpkOutEqualizer, eqSpkOutSizerMid, "Mid"   , MAX_FREQ_DEF, enableQ, enableFreq, SLIDER_MAX_FREQ);
+    m_SpkOutMid    = newEQ(panelSpkOutEqualizer, eqSpkOutSizerMid, _("Mid")   , MAX_FREQ_DEF, enableQ, enableFreq, SLIDER_MAX_FREQ);
     eqSpkOutSizerSliders->Add(eqSpkOutSizerMid, 1, static_cast<int>(wxALL), 7);
         
-    m_SpkOutTreble = newEQ(panelSpkOutEqualizer, eqSpkOutSizerTreble, "Treble", MAX_FREQ_TREBLE, disableQ, enableFreq, SLIDER_MAX_FREQ);
+    m_SpkOutTreble = newEQ(panelSpkOutEqualizer, eqSpkOutSizerTreble, _("Treble"), MAX_FREQ_TREBLE, disableQ, enableFreq, SLIDER_MAX_FREQ);
     eqSpkOutSizerSliders->Add(eqSpkOutSizerTreble, 1, static_cast<int>(wxALL), 7);
 
     eqSpkOutSizer->Add(eqSpkOutSizerSliders, 0, static_cast<int>(wxEXPAND), 0);
@@ -213,6 +212,41 @@ FilterDlg::FilterDlg(wxWindow* parent, bool running, bool *newMicInFilter, bool 
     this->Layout();
 
     this->Centre(wxBOTH);
+
+    // Names for automated GUI testing.
+    SetName("filter");
+    m_ckboxNoiseReduction->SetName("filter.ckboxNoiseReduction");
+    m_ckboxAgcEnabled->SetName("filter.ckboxAgc");
+    m_ckboxBwExpandEnabled->SetName("filter.ckboxBwExpand");
+    m_auiNotebook->SetName("filter.notebook");
+    m_MicInEnable->SetName("filter.micIn.ckboxEnable");
+    m_MicInDefault->SetName("filter.micIn.btnDefault");
+    m_SpkOutEnable->SetName("filter.spkOut.ckboxEnable");
+    m_SpkOutDefault->SetName("filter.spkOut.btnDefault");
+    m_sdbSizer5OK->SetName("filter.btnClose");
+
+    auto nameEQ = [](EQ& eq, wxString const& prefix) {
+        if (eq.sliderFreq != nullptr)
+        {
+            eq.sliderFreq->SetName(prefix + "Freq");
+            eq.valueFreq->SetName(prefix + "FreqValue");
+        }
+        eq.sliderGain->SetName(prefix + "Gain");
+        eq.valueGain->SetName(prefix + "GainValue");
+        if (eq.sliderQ != nullptr)
+        {
+            eq.sliderQ->SetName(prefix + "Q");
+            eq.valueQ->SetName(prefix + "QValue");
+        }
+    };
+    nameEQ(m_MicInVol, "filter.micIn.vol");
+    nameEQ(m_MicInBass, "filter.micIn.bass");
+    nameEQ(m_MicInMid, "filter.micIn.mid");
+    nameEQ(m_MicInTreble, "filter.micIn.treble");
+    nameEQ(m_SpkOutVol, "filter.spkOut.vol");
+    nameEQ(m_SpkOutBass, "filter.spkOut.bass");
+    nameEQ(m_SpkOutMid, "filter.spkOut.mid");
+    nameEQ(m_SpkOutTreble, "filter.spkOut.treble");
 
     // Workaround to prevent Default button from jumping around
     // when selecting different tabs.
@@ -350,7 +384,7 @@ EQ FilterDlg::newEQ(wxWindow* parent, wxSizer *bs, wxString const& eqName, float
     if (enableFreq)
     {
         wxSizer* sizerFreq = new wxBoxSizer(wxVERTICAL);
-        newEQControl(eq.eqBox, &eq.sliderFreq, &eq.valueFreq, sizerFreq, "Freq", maxSliderFreq);
+        newEQControl(eq.eqBox, &eq.sliderFreq, &eq.valueFreq, sizerFreq, _("Freq"), maxSliderFreq);
         bsEQ->Add(sizerFreq, 1, static_cast<int>(wxEXPAND));
         eq.maxFreqHz = maxFreqHz;
         eq.sliderFreqId = eq.sliderFreq->GetId();
@@ -368,7 +402,7 @@ EQ FilterDlg::newEQ(wxWindow* parent, wxSizer *bs, wxString const& eqName, float
     }
     
     wxSizer* sizerGain = new wxBoxSizer(wxVERTICAL);
-    newEQControl(eq.eqBox, &eq.sliderGain, &eq.valueGain, sizerGain, "Gain", SLIDER_MAX_GAIN);
+    newEQControl(eq.eqBox, &eq.sliderGain, &eq.valueGain, sizerGain, _("Gain"), SLIDER_MAX_GAIN);
     bsEQ->Add(sizerGain, 1, static_cast<int>(wxEXPAND));
     
 #if wxUSE_ACCESSIBILITY
@@ -381,7 +415,7 @@ EQ FilterDlg::newEQ(wxWindow* parent, wxSizer *bs, wxString const& eqName, float
     if (enableQ)
     {
         wxSizer* sizerQ = new wxBoxSizer(wxVERTICAL);
-        newEQControl(eq.eqBox, &eq.sliderQ, &eq.valueQ, sizerQ, "Q", SLIDER_MAX_Q);
+        newEQControl(eq.eqBox, &eq.sliderQ, &eq.valueQ, sizerQ, _("Q"), SLIDER_MAX_Q);
         bsEQ->Add(sizerQ, 1, static_cast<int>(wxEXPAND));
 
 #if wxUSE_ACCESSIBILITY
@@ -539,6 +573,14 @@ void FilterDlg::ExchangeData(int inout)
         wxGetApp().appConfiguration.save(pConfig);
 
         volsChanged_ = true;
+
+        // The main window has a speaker volume control of its own, which
+        // only looks here for changes while FreeDV is running.
+        auto mainFrame = (MainFrame*)wxGetApp().GetTopWindow();
+        if (mainFrame != nullptr)
+        {
+            mainFrame->syncSpeakerLevelWithConfiguration();
+        }
     }
 }
 
@@ -622,16 +664,9 @@ void FilterDlg::OnInitDialog(wxInitDialogEvent&)
     ExchangeData(EXCHANGE_DATA_IN);
 }
 
-void FilterDlg::OnEnable(wxScrollEvent&) {
-    updateControlState();
-}
-
-void FilterDlg::OnBassBoost(wxScrollEvent&) {
-    updateControlState();
-}
-
 void FilterDlg::OnNoiseReductionEnable(wxScrollEvent&) {
     wxGetApp().appConfiguration.filterConfiguration.noiseReductionEnable = m_ckboxNoiseReduction->GetValue();
+    g_noiseReductionEnabled.store(wxGetApp().appConfiguration.filterConfiguration.noiseReductionEnable, std::memory_order_release); // forces immediate change at pipeline level
     ExchangeData(EXCHANGE_DATA_OUT);
     updateControlState();
 }
@@ -639,7 +674,19 @@ void FilterDlg::OnNoiseReductionEnable(wxScrollEvent&) {
 void FilterDlg::OnAgcEnable(wxScrollEvent&) {
     wxGetApp().appConfiguration.filterConfiguration.agcEnabled = m_ckboxAgcEnabled->GetValue();
     g_agcEnabled.store(wxGetApp().appConfiguration.filterConfiguration.agcEnabled, std::memory_order_release); // forces immediate change at pipeline level
+    if (wxGetApp().appConfiguration.filterConfiguration.agcEnabled)
+    {
+        // Mic level should be reset to 0 if AGC is enabled.
+        wxGetApp().appConfiguration.filterConfiguration.micInChannel.volInDB = 0;
+        m_MicInVol.gaindB = wxGetApp().appConfiguration.filterConfiguration.micInChannel.volInDB;
+        setGain(&m_MicInVol);
+
+        plotMicInFilterSpectrum();
+        adjRunTimeMicInFilter();
+    }
+
     ExchangeData(EXCHANGE_DATA_OUT);
+    updateControlState();
 }
 
 void FilterDlg::OnBwExpandEnable(wxScrollEvent&) {
@@ -662,7 +709,7 @@ void FilterDlg::updateControlState()
     m_MicInTreble.sliderFreq->Enable(wxGetApp().appConfiguration.filterConfiguration.micInChannel.eqEnable);
     m_MicInTreble.sliderGain->Enable(wxGetApp().appConfiguration.filterConfiguration.micInChannel.eqEnable);
     
-    m_MicInVol.sliderGain->Enable(true);
+    m_MicInVol.sliderGain->Enable(!wxGetApp().appConfiguration.filterConfiguration.agcEnabled);
     
     m_MicInDefault->Enable(wxGetApp().appConfiguration.filterConfiguration.micInChannel.eqEnable);
     
@@ -779,9 +826,10 @@ void FilterDlg::adjRunTimeMicInFilter(void) {
 
     g_mutexProtectingCallbackData.Lock();
     ExchangeData(EXCHANGE_DATA_OUT);
-    if (m_running) {
-        *m_newMicInFilter = true;
-    }
+
+    // Asked for whether or not FreeDV was running when this window was
+    // opened, as it may have been started since.
+    *m_newMicInFilter = true;
     wxGetApp().appConfiguration.filterConfiguration.micInChannel.eqEnable = m_MicInEnable->GetValue();
     g_mutexProtectingCallbackData.Unlock();
 
@@ -793,9 +841,7 @@ void FilterDlg::adjRunTimeSpkOutFilter(void) {
 
     g_mutexProtectingCallbackData.Lock();
     ExchangeData(EXCHANGE_DATA_OUT);
-    if (m_running) {
-        *m_newSpkOutFilter = true;
-    }
+    *m_newSpkOutFilter = true;
     wxGetApp().appConfiguration.filterConfiguration.spkOutChannel.eqEnable = m_SpkOutEnable->GetValue();
     g_mutexProtectingCallbackData.Unlock();
 

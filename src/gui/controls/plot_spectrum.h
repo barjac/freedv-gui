@@ -45,6 +45,8 @@ class PlotSpectrum : public PlotPanel
         void        OnSize(wxSizeEvent& event) override;
         void        OnShow(wxShowEvent& event) override;
         void        drawGraticuleFast(wxGraphicsContext* ctx, bool repaintDataOnly);
+        void        drawGraticuleLines_(wxGraphicsContext* ctx);
+        void        drawGraticuleLabels_(wxGraphicsContext* ctx);
         void        draw(wxGraphicsContext* ctx, bool repaintDataOnly = false) override;
         void        OnMouseLeftDoubleClick(wxMouseEvent& event);
         void        OnMouseRightDoubleClick(wxMouseEvent& event);
@@ -64,6 +66,30 @@ class PlotSpectrum : public PlotPanel
         int         m_numSampleAveraging;
         int         leftOffset_;
         int         bottomOffset_;
+
+#if wxCHECK_VERSION(3,2,0)
+        // The graticule's gridlines and ticks rendered once into a transparent bitmap,
+        // and what they were rendered for; see drawGraticuleFast().
+        struct GraticuleKey
+        {
+            wxSize size;
+            double scale = 0;
+            wxColour lineColour;
+            float minMagDb = 0;
+            float maxMagDb = 0;
+            int leftOffset = 0;
+            int bottomOffset = 0;
+
+            bool operator==(const GraticuleKey& other) const
+            {
+                return size == other.size && scale == other.scale && lineColour == other.lineColour &&
+                    minMagDb == other.minMagDb && maxMagDb == other.maxMagDb &&
+                    leftOffset == other.leftOffset && bottomOffset == other.bottomOffset;
+            }
+        };
+        GraticuleKey graticuleKey_;
+        wxGraphicsBitmap graticuleBitmap_;
+#endif // wxCHECK_VERSION(3,2,0)
 
         void        OnDoubleClickCommon(wxMouseEvent& event);
 

@@ -22,7 +22,7 @@ this is not guaranteed. Any bugfixes required for an unsupported
 platform may be deferred or rejected, especially if there is impact to
 supported platforms. Requests for official support of new platforms
 should go through our existing <a
-href="https://github.com/drowe67/freedv-gui/issues/new?template=feature_request.yml">Feature
+href="https://github.com/freedv/freedv-gui/issues/new?template=feature_request.yml">Feature
 Request process</a>.</p>
 <h2 data-number="2.2" id="setup-wizard"><span
 class="header-section-number">2.2</span> Setup Wizard</h2>
@@ -249,7 +249,7 @@ locations depending on platform:</p>
 </tr>
 <tr class="odd">
 <td>macOS</td>
-<td>See https://github.com/drowe67/freedv-gui/tree/master/wav</td>
+<td>See https://github.com/freedv/freedv-gui/tree/master/wav</td>
 </tr>
 </tbody>
 </table>
@@ -270,11 +270,12 @@ buttons adjust by 0.2 dB; the mouse scroll wheel can also be used to
 generate 0.2dB steps whilst hovering anywhere over the TX Attenuation
 control area. Values below 0 dB attenuate the transmit signal.</p>
 <p>When FreeDV is running, you can observe the sound card signals in the
-main window tabs (From Radio, From Mic, To Speaker).</p>
+main window tabs (From Radio, From Mic, To Mod, To Speaker).</p>
 <ol type="1">
 <li><p>On receive, FreeDV is not very sensitive to the <strong>From
-Radio</strong> level, adjust so it is mid-range and not clipping. FreeDV
-uses phase shift keying (PSK) so is not sensitive to amplitude.</p></li>
+Radio</strong> level, adjust so that the Level meter is around 75% scale
+and not clipping. FreeDV uses phase shift keying (PSK) so is not
+sensitive to amplitude.</p></li>
 <li><p>The transmit level from your computer to your radio is important.
 On transmit, adjust your level so that the ALC is <strong>just</strong>
 being nudged. More <strong>is not better</strong> with the FreeDV
@@ -313,8 +314,22 @@ TX attenuation (shown only when a band is known).</li>
 CAT, or manual frequency entry) and load any saved attenuation value for
 the new band. When a band is left the current values for that band are
 saved immediately.</p></li>
-<li><p>Adjust the microphone audio so the peaks are not clipping, and
-the average is about half the maximum.</p></li>
+<li><p>FreeDV 700D and 700E can drive your transmitter at an average
+power of 40% of its peak power rating. For example 40W RMS for a 100W
+PEP radio. Make sure your transmitter can handle continuous power output
+at these levels, and reduce the power if necessary.</p></li>
+<li><p>Adjust the microphone audio using your operating system’s volume
+settings so the peaks are not clipping, and the average is about 75% of
+max scale on the Level meter. If additional adjustments are needed, the
+“Mic Level” slider on the right hand side of the main window will allow
+you to adjust audio levels +/- 20 dB. The “From Mic” tab will show audio
+after Mic Level adjustments, but before AGC (if enabled). If additional
+adjustments are performed, the peaks in this plot should not exceed
+approximately +/- 0.5.</p></li>
+<li><p>AGC is enabled by default and is recommended that it remain on.
+If desired, it can be disabled by going to Tools-&gt;Filters. The “To
+Mod” plot shows the audio that will ultimately be transmitted out over
+the air, after AGC (if enabled) processing.</p></li>
 </ol>
 <h2 data-number="2.6" id="audio-processing"><span
 class="header-section-number">2.6</span> Audio Processing</h2>
@@ -389,9 +404,27 @@ when enabled.</p>
 <h1 data-number="5" id="quick-record"><span
 class="header-section-number">5</span> Quick Record</h1>
 <p>To quickly record incoming signals from the radio, a ‘Record’ button
-is provided in the main window. Clicking this button will create a file
-beginning with the name “FreeDV_FromRadio” and containing the current
-date and time. Clicking ‘Record’ again will stop recording.</p>
+is provided in the main window. Clicking this button opens a dialog that
+lets you choose what to record:</p>
+<ul>
+<li>“Off Air”: records the raw audio coming in from the radio (while
+transmitting, the modulated audio being sent to the radio instead).
+Files are named “FDV_FromRadio” followed by the current date and time,
+plus an optional suffix.</li>
+<li>“Decoded”: records the decoded audio coming out of the demodulator.
+Files are named “FDV_FromDecoder” in the same way. Decoded recordings
+can optionally be saved as MP3.</li>
+<li>“Both”: records both of the above at the same time to two separate
+files, both as 16-bit 48 kHz WAV. Note that the decoded recording only
+starts once the modem syncs, and lags the off-air recording by the
+modem’s processing delay, so the two files can be aligned in an audio
+editor. While transmitting in half-duplex mode the decoded recording is
+silent (or contains the monitored microphone audio if “Monitor
+transmitted audio” is enabled).</li>
+</ul>
+<p>Clicking ‘Record’ again will stop recording (all active files if
+“Both” was chosen).</p>
+<p>All recordings are 16-bit, 48 kHz, mono.</p>
 <p>The Audio tab inside Settings-Edit Settings allows control of where
 these recordings are saved. By default, this is inside the current
 user’s Documents folder.</p>
@@ -1097,23 +1130,250 @@ class="header-section-number">19.1</span> V3.0.0 TBD 2026</h2>
 <ol type="1">
 <li>Enhancements:
 <ul>
-<li>RADEV2: Standardize mode as USB. (PR #1397)</li>
+<li>RADEV2: Standardize mode as USB. (PR #1397, #1454) - thanks <span
+class="citation" data-cites="barjac">@barjac</span>!</li>
 <li>Combine all configuration into Settings-&gt;Edit Settings. (PR
-#1418)</li>
-<li>Rework Easy Setup window into new Setup Wizard. (PR #1418,
-#1432)</li>
+#1418, #1511)</li>
+<li>Rework Easy Setup window into new Setup Wizard. (PR #1418, #1432,
+#1513)</li>
+<li>Add ability to record both the raw and decoded RX audio. (PR
+#1501)</li>
+<li>Linux/PulseAudio: Show friendlier device names in configuration
+windows. (PR #1508)</li>
+<li>Add ability to import configuration from WSJT-X/WS/JTDX/JS8Call. (PR
+#1513, #1539)</li>
+<li>Add dark mode support for Windows. (PR #1518, #1529, #1560)</li>
+<li>Add infrastructure for translating FreeDV into other languages. (PR
+#1526)</li>
+<li>Hamlib: only allow selecting a PTT serial device when using RTS or
+DTR for PTT. (PR #1544)</li>
+<li>Improved ease of use when adjusting predefined frequencies. (PR
+#1570, #1581) - thanks <span class="citation"
+data-cites="barjac">@barjac</span>!</li>
+</ul></li>
+<li>Bugfixes:
+<ul>
+<li>Fix silence being mixed into the first half second of each
+transmission, and holes in the signal at its start. (PR #1562)</li>
+</ul></li>
+<li>Build system:
+<ul>
+<li>Update wxWidgets to 3.3.4. (PR #1560, #1556)</li>
+<li>CI: only build with PGO, run the tests and report coverage on
+merges; other pushes get unsigned packages to try out. (PR #1563,
+#1585)</li>
 </ul></li>
 <li>Other:
 <ul>
 <li>Remove legacy FreeDV modes (700D/700E/1600). (PR #1407, #1411,
 #1415)</li>
+<li>Add automated tests of the user interface: Setup Wizard, FreeDV
+Reporter, Settings, main, Log QSO, Start Recording and Filter windows,
+plots, audio device errors, serial port PTT and rig control. (PR #1544,
+#1546, #1548, #1550, #1551, #1553, #1554, #1556, #1588, #1595)</li>
+<li>Run the automated user interface tests, and report test coverage, as
+part of CI. (PR #1556)</li>
+<li>Run the automated user interface tests on macOS. (PR #1563)</li>
+<li>Run the automated user interface tests on Windows. (PR #1566)</li>
+<li>Remove unused plot, main window and FreeDV Reporter code. (PR
+#1556)</li>
+<li>Settings: play back audio input tests through the speaker/headphones
+instead of the radio. (PR #1548)</li>
+<li>Add tests of whole transmissions through the TX/RX threads without
+sound cards, and diagnostics for rade_loss test failures. (PR
+#1562)</li>
 </ul></li>
 </ol>
 <p><em>Note: Legacy FreeDV modes (700D/700E/1600) have been removed due
 to low use. FreeDV 2.4.x is still available if one wishes to operate
 these modes.</em></p>
-<h2 data-number="19.2" id="v2.4.0-tbd-2026"><span
-class="header-section-number">19.2</span> V2.4.0 TBD 2026</h2>
+<h2 data-number="19.2" id="v2.4.1-tbd-2026"><span
+class="header-section-number">19.2</span> V2.4.1 TBD 2026</h2>
+<ol type="1">
+<li>Bugfixes:
+<ul>
+<li>Add logic to prevent FIFO sizes that are too small to allow TX
+thread to function. (PR #1474)</li>
+<li>Fix RX/TX level-meter gauge contamination. (PR #1475) - thanks <span
+class="citation" data-cites="barjac">@barjac</span>!</li>
+<li>Fix Hamlib-related build failure with Hamlib 5.0~git. (PR
+#1477)</li>
+<li>macOS: Fix dyld error on startup when enabling sanitizers in build.
+(PR #1478)</li>
+<li>Fix potential equalizer bug that could introduce corrupted audio.
+(PR #1480)</li>
+<li>Fix uninitialized value read during waterfall plot render. (PR
+#1481)</li>
+<li>Match std::atomic memory ordering to what each atomic actually
+synchronises. (PR #1482)</li>
+<li>Remove use of mutexes in audio path during callsign decode. (PR
+#1486, #1493)</li>
+<li>Tighten audio thread timings on macOS and Windows. (PR #1494)</li>
+<li>Harden audio FIFO handling and WASAPI stop timing. (PR #1496)</li>
+<li>Fix crash when testing Easy Setup with an invalid audio
+configuration. (PR #1500)</li>
+<li>Various data race cleanups. (PR #1502)</li>
+<li>Avoid page cache miss on startup when loading RADE. (PR #1506)</li>
+<li>Stop playback of RX file before TX start. (PR #1507)</li>
+<li>Fix horizontal lines in waterfall on HiDPI/fractionally scaled Linux
+displays. (PR #1514)</li>
+<li>Reduce GUI thread paint and FreeDV Reporter overhead. (PR #1515,
+#1530)</li>
+<li>PulseAudio: give each device its own connection. (PR #1523)</li>
+<li>Fix possible deadlock on playback completion. (PR #1533)</li>
+<li>Windows: add logic to detect audio device stalls. (PR #1537)</li>
+<li>Keep RX muted after TX until the radio confirms PTT off. (PR
+#1536)</li>
+<li>Fix FreeDV hanging when starting the Voice Keyer with a cloud-backed
+file. (PR #1534)</li>
+<li>Fix data races on settings read by the audio threads. (PR
+#1535)</li>
+<li>Prevent a closed network connection from terminating FreeDV with
+SIGPIPE. (PR #1540)</li>
+<li>Fix equalizer bass/treble filters being designed for the wrong
+sample rate. (PR #1542)</li>
+<li>Fix frequency list entries occasionally being saved 1 Hz low. (PR
+#1542)</li>
+<li>Fix text settings containing e.g. “$HOME” being altered when loaded.
+(PR #1542)</li>
+<li>Hamlib/OmniRig: fix frequency/mode requested prior to connecting not
+being applied. (PR #1542)</li>
+<li>Reject stereo files in “Play File - From Radio” instead of playing
+them at half speed. (PR #1542)</li>
+<li>Fix possible crashes when stopping while using a serial port for PTT
+input. (PR #1542)</li>
+<li>Hamlib: fix limit on time spent waiting for the radio not always
+being applied. (PR #1542)</li>
+<li>FreeDV Reporter: fix incorrect distances/headings when one’s own
+grid square is incomplete. (PR #1542)</li>
+<li>FreeDV Reporter: fix stations sorting in the wrong order when their
+frequencies are more than about 2.1 GHz apart. (PR #1558)</li>
+<li>Fix crash when closing FreeDV right after stopping with a radio
+connected. (PR #1543)</li>
+<li>FreeDV Reporter: fix idle filter menu check marks after cancelling a
+custom idle time. (PR #1547)</li>
+<li>FreeDV Reporter: disable Request QSY once a request has been sent.
+(PR #1547)</li>
+<li>Voice keyer: fix button not showing “Stop Voice Keyer” while the
+voice keyer is running. (PR #1549)</li>
+<li>Voice keyer: fix newly recorded file being forgotten the next time
+FreeDV starts. (PR #1549)</li>
+<li>Fix Load Default Configuration reloading the configuration in use
+instead of the default one. (PR #1549)</li>
+<li>Linux: fix Load Default Configuration loading an empty configuration
+rather than the default one. (PR #1557)</li>
+<li>Logging: fix logged contacts sometimes being timed a second early.
+(PR #1552)</li>
+<li>Fix FreeDV being unable to exit after pressing Start with a sound
+device that couldn’t be opened. (PR #1559)</li>
+<li>Fix possible crash when an audio device fails to open before FreeDV
+has asked to be told of its errors. (PR #1559)</li>
+<li>Linux: fix audio pausing for up to two more seconds after FreeDV’s
+audio processing has been held up for more than two. (PR #1559)</li>
+<li>Settings: fix a typed-in frequency losing its last three digits when
+switching from kHz to MHz and pressing Apply. (PR #1559)</li>
+<li>Linux: fix crash on pressing Start with no sound server
+(PipeWire/PulseAudio) running. (PR #1555)</li>
+<li>Linux: report losing the sound server while running, and fix Stop
+getting stuck afterwards. (PR #1555)</li>
+<li>Fix each use of Adjust Monitor Volume leaving a hidden popup behind.
+(PR #1555)</li>
+<li>Filter: fix equaliser changes being ignored if the window was opened
+before pressing Start. (PR #1552)</li>
+<li>Fix each use of Log QSO leaving a hidden window behind. (PR
+#1552)</li>
+<li>Recording: restrict a pasted recording suffix to the same characters
+as a typed one. (PR #1552)</li>
+<li>FreeDV Reporter: fix a direction of 0 being shown for stations
+without a usable grid square after changing the band filter. (PR
+#1564)</li>
+<li>macOS: fix the last block of audio being sent to the radio over and
+over after transmitting, rather than silence. (PR #1564)</li>
+<li>Fix a saved main window size too small to be of use being kept. (PR
+#1564)</li>
+<li>Rig control: fix FreeDV briefly going back to the previous frequency
+after changing it (and so e.g. choosing the wrong sideband for analog
+mode when switched to straight after changing band). (PR #1564)</li>
+<li>macOS/Windows: fix possible crash or garbled log output when some
+audio device and thread errors are logged. (PR #1564)</li>
+<li>Windows: fix the main window being too small to show the waterfall
+and spectrum the first time FreeDV is started on a high DPI display. (PR
+#1565)</li>
+<li>Windows: fix FreeDV Reporter not removing what’s left of a flag from
+the status message after part of it is deleted. (PR #1565)</li>
+<li>Fix a possible crash when FreeDV is asked to exit again while it’s
+exiting with the FreeDV Reporter window open. (PR #1565)</li>
+<li>Fix Test PTT sometimes staying greyed out after a radio or serial
+port that couldn’t be opened. (PR #1565)</li>
+<li>Fix silence being mixed into the first half second of each
+transmission. (PR #1567, #1568)</li>
+<li>Fix the voice keyer’s RX pause and wait for a reply, the slow SNR
+display and the statistics reset after losing sync running twice as fast
+as intended. (PR #1571)</li>
+<li>Fix the spectrum plot’s sync tuning line being drawn using an
+uninitialized value until the plot’s first update. (PR #1572)</li>
+<li>FreeDV Reporter: fix stations that connected or transmitted within
+the same second sorting in a random order. (PR #1573)</li>
+<li>Fix a data race on whether FreeDV is running, between the window and
+the thread that starts and stops it. (PR #1575)</li>
+<li>Fix data races between the window, audio and processing threads on
+squelch, resync count, sound card count, PortAudio counters, debug
+switches, recording state and EQ filter re-apply flags. (PR #1578)</li>
+<li>Fix data races on the transmit mode selection when changed while
+FreeDV is running, and on the queue holding received text characters.
+(PR #1578)</li>
+<li>Linux: Fix Options frequency list scrollbar on first open. (PR
+#1579)</li>
+<li>Fix data races between the window and the threads that start/stop
+FreeDV and process audio on the frequency offset display, the list of
+active reporters and the audio device latency check at the end of TX.
+(PR #1583)</li>
+<li>macOS: fix a possible crash when an audio device that failed to
+start, or was already stopped, is stopped again. (PR #1583)</li>
+<li>Windows: fix audio devices closing their timing handles while the
+audio processing thread could still be waiting on them, and undoing the
+1 ms timer resolution request twice. (PR #1583)</li>
+<li>Prevent duplicate contacts from being restored. (PR #1589)</li>
+<li>Disable Log QSO button if logging is disabled. (PR #1589)</li>
+<li>Keep a typed FreeDV Reporter status message when the saved list
+closes. (PR #1590)</li>
+<li>Stop the radio recording budget at zero instead of wrapping it. (PR
+#1592)</li>
+</ul></li>
+<li>Build system:
+<ul>
+<li>Windows versions are now built with llvm-mingw 20260908 (PR
+#1489)</li>
+<li>Ccache support extended to third party dependencies. (PR #1498,
+#1505))</li>
+<li>Fix bundled libsndfile build on lib64 systems and strncpy build
+error. (PR #1510)</li>
+<li>Only use system libraries that can actually be linked. (PR
+#1521)</li>
+<li>Optimizations to reduce full rebuild time. (PR #1538)</li>
+<li>Build bundled wxWidgets and LibreSSL optimized and without debugging
+information, and only use ccache in CI for the builds that compile them.
+(PR #1561)</li>
+<li>Add unit tests for non-GUI code. (PR #1542)</li>
+<li>Add tests of whole transmissions through the TX/RX threads without
+sound cards. (PR #1567)</li>
+<li>Resolve build failure on OpenSUSE Tumbleweed. (PR #1577)</li>
+</ul></li>
+<li>Documentation:
+<ul>
+<li>Update documentation to reflect new repo URL. (PR #1569)</li>
+</ul></li>
+<li>Other:
+<ul>
+<li>Various GUI performance improvements. (PR #1481, #1521, #1524,
+#1527, #1531)</li>
+<li>Windows audio thread timing improvements. (PR #1488)</li>
+<li>Log when the sound server puts a PulseAudio stream on another
+device. (PR #1591)</li>
+</ul></li>
+</ol>
+<h2 data-number="19.3" id="v2.4.0-august-2026"><span
+class="header-section-number">19.3</span> V2.4.0 August 2026</h2>
 <ol type="1">
 <li>Bugfixes:
 <ul>
@@ -1149,13 +1409,33 @@ group as ‘From Mic’. (PR #1428)</li>
 SNR and Spectrum plots. (PR #1429) - thanks <span class="citation"
 data-cites="barjac">@barjac</span>!</li>
 <li>Fix window position restore under KWin and labwc (main window +
-FreeDV Reporter window). (PR #1431, #1433) - thanks <span
+FreeDV Reporter window). (PR #1431, #1433, #1449, #1450) - thanks <span
 class="citation" data-cites="barjac">@barjac</span>!</li>
 <li>Harden experimental tab layout persistence. (PR #1434) - thanks
 <span class="citation" data-cites="barjac">@barjac</span>!</li>
 <li>Fix right-click context menus dismissing before they can be read
 (GTK) (PR #1437) - thanks <span class="citation"
 data-cites="barjac">@barjac</span>!</li>
+<li>Unconditionally add new station to Heard Station list if first
+heard. (PR #1444)</li>
+<li>Fix heard-stations callsign combo stuck-highlight, right-click
+behaviour, and a stale-index crash (PR #1448) - thanks <span
+class="citation" data-cites="barjac">@barjac</span>!</li>
+<li>Fix crash and long hang on main window close with an unresponsive
+rig (PR #1452) - thanks <span class="citation"
+data-cites="barjac">@barjac</span>!</li>
+<li>Fix Radio Frequency coloring on dark/light mode transition. (PR
+#1453)</li>
+<li>Fix FreeDV Reporter column-order corruption and Last TX column
+width. (PR #1458) - thanks <span class="citation"
+data-cites="barjac">@barjac</span>!</li>
+<li>Fix waterfall/spectrum filling solid colour during half-duplex TX.
+(PR #1462) - thanks <span class="citation"
+data-cites="barjac">@barjac</span>!</li>
+<li>Windows/macOS: Zero audio on startup. (PR #1463)</li>
+<li>Fix issue causing TX thread to use more CPU time than expected with
+no audio available. (PR #1465)</li>
+<li>AppImage: stop forcing GDK_BACKEND=x11. (PR #1593)</li>
 </ul></li>
 <li>Enhancements:
 <ul>
@@ -1182,6 +1462,11 @@ the voice keyer file selector to show .wav and .mp3. (PR #1424) - thanks
 <li>Fix Voice Keyer/PTT context menu positioning under native Wayland.
 (PR #1438) - thanks <span class="citation"
 data-cites="barjac">@barjac</span>!</li>
+<li>Automatically start decoding on FreeDV startup. (PR #1436)</li>
+<li>Remove “Clip” indicator from main window to reduce confusion. (PR
+#1461)</li>
+<li>Use log scale for Level meter and take mic level before AGC. (PR
+#1464)</li>
 </ul></li>
 <li>Build system:
 <ul>
@@ -1189,157 +1474,23 @@ data-cites="barjac">@barjac</span>!</li>
 <li>Upgrade Hamlib to 4.7.2. (PR #1413)</li>
 <li>Update wxWidgets to 3.3.3. (PR #1439)</li>
 <li>Require C++20 to build FreeDV. (PR #1440)</li>
+<li>Enable LTO/PGO for macOS .app build. (PR #1456)</li>
+<li>Enable PGO for Windows builds. (PR #1457)</li>
+<li>Add support for CCache. (PR #1328)</li>
 </ul></li>
 <li>Other:
 <ul>
 <li>FlexRadio/KA9Q integrations moved to freedv-integrations repo. (PR
 #1368)</li>
+<li>Improve tab save/load behavior on systems with wxWidgets 3.3+. (PR
+#1435)</li>
 </ul></li>
 </ol>
-<h2 data-number="19.3" id="v2.3.1-may-2026"><span
-class="header-section-number">19.3</span> V2.3.1 May 2026</h2>
-<ol type="1">
-<li>Bugfixes:
-<ul>
-<li>Fix TX/tune level context menus on Linux distros using wxWidgets
-&lt;= 3.2. (PR #1333) - thanks <span class="citation"
-data-cites="barjac">@barjac</span>!</li>
-<li>Fix audio routing problems on Windows due to hardware offloading.
-(PR #1335)</li>
-<li>Hamlib: Detect empty rig name on start. (PR #1339, #1351) - thanks
-<span class="citation" data-cites="barjac">@barjac</span>!</li>
-<li>Fix missing Hamlib defines when building from source (PR #1353) -
-thanks <span class="citation" data-cites="barjac">@barjac</span>!</li>
-<li>FreeDV Reporter: Fix issue preventing mode changes on double-click.
-(PR #1343)</li>
-<li>Fix compiler warning/error in EventHandler when using GCC 16.1. (PR
-#1347)</li>
-<li>Improve Flex waveform RX audio quality. (PR #1338, #1348, 1356)</li>
-<li>Flex: Use version number without Git hash for waveform registration.
-(PR #1359)</li>
-<li>Fix intermittent CSV logging corruption. (PR #1361)</li>
-<li>Hamlib: Fix bug preventing frequency change after changing on the
-radio. (PR #1363)</li>
-<li>KA9Q: Remove custom AppRun script causing audio distortion. (PR
-#1364)</li>
-</ul></li>
-<li>Enhancements:
-<ul>
-<li>Allow use of a custom key for PTT. (PR #1309)</li>
-<li>Improve Reporter message list usability. (PR #1310) - thanks <span
-class="citation" data-cites="barjac">@barjac</span>!</li>
-<li>Clarify Reporter on/off tooltip. (PR #1345)</li>
-</ul></li>
-</ol>
-<h2 data-number="19.4" id="v2.3.0-may-2026"><span
-class="header-section-number">19.4</span> V2.3.0 May 2026</h2>
-<ol type="1">
-<li>Bugfixes:
-<ul>
-<li>Linux: fix semaphore wakeup timing to reduce audio dropouts. (PR
-#1220)</li>
-<li>FreeDV Reporter: Fix display issues on non-English systems. (PR
-#1217)</li>
-<li>Update audio device list in Easy Setup after opening advanced audio
-setup. (PR #1223)</li>
-<li>Easy Setup: Fix crash while displaying Hamlib error. (PR #1224)</li>
-<li>Force numpy to 2.3.x due to illegal instruction errors. (PR
-#1230)</li>
-<li>FreeDV Reporter: Disable autosizing enable/disable on Linux. (PR
-#1231)</li>
-<li>Improve reliability of Start/Stop and PTT buttons. (PR #1236)</li>
-<li>Hamlib: Reenable FLRig/rigctl timeouts. (PR #1233)</li>
-<li>Hamlib/OmniRig: Ignore frequency/mode query during TX. (PR
-#1246)</li>
-<li>Fix audio dropouts on Linux. (PR #1266)</li>
-<li>OmniRig: Use frequency from VFO if we get a zero frequency. (PR
-#1274)</li>
-<li>Fix bugs related to display of Mic/Speaker Level slider. (PR #1281)
-- thanks <span class="citation" data-cites="barjac">@barjac</span>!</li>
-<li>Fix bug causing main window’s menu to disappear when Reporter is
-displayed. (PR #1282)</li>
-<li>Flex: Prevent multiple slices from being in FreeDV mode. (PR
-#1270)</li>
-<li>Further improve audio dropouts. (PR #1287)</li>
-<li>FreeDV Reporter: Fix inability to use mouse wheel on Msg column. (PR
-#1289)</li>
-<li>Fix RADE related compiler errors. (PR #1299)</li>
-<li>Logging: fix incorrect time when using UTC due to DST. (PR #1302) -
-thanks <span class="citation" data-cites="barjac">@barjac</span>!</li>
-<li>Ensure that PTT is actually off when opening Hamlib connection. (PR
-#1308)</li>
-<li>Fix race condition preventing frequency/mode from changing on start
-with SmartSDR 4.2. (PR #1314, #1320, #1321, #1322)</li>
-<li>Fix inability to open web browser in AppImages (e.g. when viewing
-callsign info). (PR #1326)</li>
-</ul></li>
-<li>Enhancements:
-<ul>
-<li>FreeDV Reporter: Use ItemsAdded/ItemsDeleted instead of Cleared()
-for performance. (PR #1212)</li>
-<li>Optimize “From XXX” plot performance. (PR #1238, #1239)</li>
-<li>Logging: Send WSJT-X ‘Decode’ message to indicate RX’d SNR. (PR
-#1248)</li>
-<li>Remove Python from RADE implementation to improve performance. (PR
-#1251)</li>
-<li>Add ability to hide self from FreeDV Reporter list. (PR #1260,
-#1278)</li>
-<li>Add Tune button to allow tuning antennas/rigs. (PR #1259, #1265,
-#1317, #1322)</li>
-<li>Add SNR plot to main window. (PR #1250, #1261)</li>
-<li>Bring back RX frequency indicator for RADE. (PR #1265, #1283)</li>
-<li>Improve usability of attenuation control in the main window. (PR
-#1268) - thanks <span class="citation"
-data-cites="barjac">@barjac</span>!</li>
-<li>Use RNNoise for improved noise canceling during TX. (PR #1276,
-#1307)</li>
-<li>FreeDV Reporter: Add ability to filter based on individual columns.
-(PR #1285)</li>
-<li>Improve spectrum and waterfall plot appearance on small displays.
-(PR #1288) - thanks <span class="citation"
-data-cites="barjac">@barjac</span>!</li>
-<li>Add optional per-band TX attenuation saving. (PR #1284, #1323) -
-thanks <span class="citation" data-cites="barjac">@barjac</span>!</li>
-<li>Log heard callsigns to a CSV file. (PR #1290, #1293)</li>
-<li>Add ability to load and save different FreeDV configurations. (PR
-#1296)</li>
-<li>Hamlib: Add options to force RTS and DTR on. (PR #1292)</li>
-<li>Add recogniition of SmartSDR 4.2+ DAX devices to Easy Setup. (PR
-#1306)</li>
-<li>Easy Setup: Also emit audio tone through speakers. (PR #1033)</li>
-<li>Switch to r8brain for audio resampling. (PR #1307)</li>
-</ul></li>
-<li>Build system:
-<ul>
-<li>Update Python to 3.14.3. (PR #1221)</li>
-<li>Update Hamlib to 4.7.1. (PR #1226, #1314)</li>
-<li>Update wxWidgets to 3.3.2. (PR #1244)</li>
-<li>Flex: Update Docker container version to match AppImage version. (PR
-#1256)</li>
-<li>Reenable Windows on ARM builds previously disabled in 2.0.0. (PR
-#1297, #1300)</li>
-<li>Add automated code signing support for Windows builds. (PR
-#1312)</li>
-</ul></li>
-<li>Documentation:
-<ul>
-<li>Update README instructions to reflect current Windows build steps.
-(PR #1232)</li>
-<li>Add OmniRig troubleshooting to the user manual. (PR #1264)</li>
-<li>Update FlexRadio waveform README to reflect SmartSDR 4.2 release.
-(PR #1311)</li>
-</ul></li>
-<li>Other:
-<ul>
-<li>Audio resampling logic consolidated in one location for ease of
-maintenance. (PR #1286, #1307)</li>
-</ul></li>
-</ol>
-<h2 data-number="19.5" id="earlier-than-v2.2.0"><span
-class="header-section-number">19.5</span> Earlier than V2.2.0</h2>
+<h2 data-number="19.4" id="earlier-than-v2.3.0"><span
+class="header-section-number">19.4</span> Earlier than V2.3.0</h2>
 <p>See <a
-href="https://github.com/drowe67/codec2/blob/master/CHANGELOG_OLD.md">this</a>
-for more information about changes in versions prior to 2.2.0.</p>
+href="https://github.com/freedv/freedv-gui/blob/master/CHANGELOG_OLD.md">this</a>
+for more information about changes in versions prior to 2.3.0.</p>
 <h1 data-number="20" id="references"><span
 class="header-section-number">20</span> References</h1>
 <ul>

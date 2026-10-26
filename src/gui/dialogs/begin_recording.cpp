@@ -54,9 +54,7 @@ namespace
 BeginRecordingDialog::BeginRecordingDialog(wxWindow* parent, wxString const& defaultRecordingSuffix) 
     : wxDialog(parent, wxID_ANY, _("Start Recording"), wxDefaultPosition, wxSize(250,-1), wxDEFAULT_DIALOG_STYLE|wxRESIZE_BORDER|wxTAB_TRAVERSAL)
 {    
-    // XXX - FreeDV only supports English but makes a best effort to at least use regional formatting
-    // for e.g. numbers. Thus, we only need to override layout direction.
-    SetLayoutDirection(wxLayout_LeftToRight);
+    WXWIDGETS_SET_LAYOUT_DIRECTION;
        
     // Create top-level of control hierarchy.
     wxPanel* panel = new wxPanel(this);
@@ -69,13 +67,13 @@ BeginRecordingDialog::BeginRecordingDialog(wxWindow* parent, wxString const& def
     gridSizerRecordingSettings->AddGrowableCol(1);
 
     // Recording suffix
-    wxStaticText* labelRecordingSuffix = new wxStaticText(recordingSettingsBox, wxID_ANY, wxT("Recording suffix:"), wxDefaultPosition, wxSize(125,-1), 0);
+    wxStaticText* labelRecordingSuffix = new wxStaticText(recordingSettingsBox, wxID_ANY, _("Recording suffix:"), wxDefaultPosition, wxSize(125,-1), 0);
     gridSizerRecordingSettings->Add(labelRecordingSuffix, 0, static_cast<int>(wxALIGN_CENTER_VERTICAL) | wxALIGN_RIGHT, 2);
 
     recordingSuffix_ = new wxTextCtrl(recordingSettingsBox, wxID_ANY, SanitizeRecordingSuffix(defaultRecordingSuffix), wxDefaultPosition, wxSize(125, -1), 0);
     gridSizerRecordingSettings->Add(recordingSuffix_, 0, static_cast<int>(wxALIGN_CENTER_VERTICAL) | wxEXPAND, 2);
 
-    wxStaticText* labelRecordingType = new wxStaticText(recordingSettingsBox, wxID_ANY, wxT("Recording type:"), wxDefaultPosition, wxSize(125,-1), 0);
+    wxStaticText* labelRecordingType = new wxStaticText(recordingSettingsBox, wxID_ANY, _("Recording type:"), wxDefaultPosition, wxSize(125,-1), 0);
     gridSizerRecordingSettings->Add(labelRecordingType, 0, static_cast<int>(wxALIGN_CENTER_VERTICAL) | wxALIGN_RIGHT, 2);
 
     wxBoxSizer* typeSizer = new wxBoxSizer(wxHORIZONTAL);
@@ -84,16 +82,18 @@ BeginRecordingDialog::BeginRecordingDialog(wxWindow* parent, wxString const& def
     typeSizer->Add(rawRecording_, 0, static_cast<int>(wxALL) | static_cast<int>(wxALIGN_CENTER_VERTICAL), 2);
     decodedRecording_ = new wxRadioButton(recordingSettingsBox, wxID_ANY, _("Decoded"));
     typeSizer->Add(decodedRecording_, 0, static_cast<int>(wxALL) | static_cast<int>(wxALIGN_CENTER_VERTICAL), 2);
+    bothRecording_ = new wxRadioButton(recordingSettingsBox, wxID_ANY, _("Both"));
+    typeSizer->Add(bothRecording_, 0, static_cast<int>(wxALL) | static_cast<int>(wxALIGN_CENTER_VERTICAL), 2);
     gridSizerRecordingSettings->Add(typeSizer, 0, static_cast<int>(wxALIGN_CENTER_VERTICAL), 2);
 
-    wxStaticText* labelRecordingFormat = new wxStaticText(recordingSettingsBox, wxID_ANY, wxT("Recording format:"), wxDefaultPosition, wxSize(125,-1), 0);
+    wxStaticText* labelRecordingFormat = new wxStaticText(recordingSettingsBox, wxID_ANY, _("Recording format:"), wxDefaultPosition, wxSize(125,-1), 0);
     gridSizerRecordingSettings->Add(labelRecordingFormat, 0, static_cast<int>(wxALIGN_CENTER_VERTICAL) | wxALIGN_RIGHT, 2);
 
     wxBoxSizer* formatSizer = new wxBoxSizer(wxHORIZONTAL);
-    formatWav_ = new wxRadioButton(recordingSettingsBox, wxID_ANY, _("WAV"), wxDefaultPosition, wxDefaultSize, wxRB_GROUP);
+    formatWav_ = new wxRadioButton(recordingSettingsBox, wxID_ANY, wxT("WAV"), wxDefaultPosition, wxDefaultSize, wxRB_GROUP);
     formatWav_->SetValue(true);
     formatSizer->Add(formatWav_, 0, static_cast<int>(wxALL) | static_cast<int>(wxALIGN_CENTER_VERTICAL), 2);
-    formatMp3_ = new wxRadioButton(recordingSettingsBox, wxID_ANY, _("MP3"));
+    formatMp3_ = new wxRadioButton(recordingSettingsBox, wxID_ANY, wxT("MP3"));
     formatMp3_->Enable(false);
     formatSizer->Add(formatMp3_, 0, static_cast<int>(wxALL) | static_cast<int>(wxALIGN_CENTER_VERTICAL), 2);
     gridSizerRecordingSettings->Add(formatSizer, 0, static_cast<int>(wxALIGN_CENTER_VERTICAL), 2);
@@ -124,12 +124,24 @@ BeginRecordingDialog::BeginRecordingDialog(wxWindow* parent, wxString const& def
     this->Centre(wxBOTH);
     this->SetMinSize(GetBestSize());
     
+    // Window names, used by GUI test scripts to find controls (see test/gui).
+    SetName("beginRecording");
+    recordingSuffix_->SetName("beginRecording.recordingSuffix");
+    rawRecording_->SetName("beginRecording.rawRecording");
+    decodedRecording_->SetName("beginRecording.decodedRecording");
+    bothRecording_->SetName("beginRecording.bothRecording");
+    formatWav_->SetName("beginRecording.formatWav");
+    formatMp3_->SetName("beginRecording.formatMp3");
+    m_buttonOK->SetName("beginRecording.btnStart");
+    m_buttonCancel->SetName("beginRecording.btnCancel");
+
     // Hook in events
     this->Connect(wxEVT_INIT_DIALOG, wxInitDialogEventHandler(BeginRecordingDialog::OnInitDialog));
     this->Connect(wxEVT_CLOSE_WINDOW, wxCloseEventHandler(BeginRecordingDialog::OnClose));
     
     rawRecording_->Connect(wxEVT_RADIOBUTTON, wxCommandEventHandler(BeginRecordingDialog::OnRecordingTypeChange), NULL, this);
     decodedRecording_->Connect(wxEVT_RADIOBUTTON, wxCommandEventHandler(BeginRecordingDialog::OnRecordingTypeChange), NULL, this);
+    bothRecording_->Connect(wxEVT_RADIOBUTTON, wxCommandEventHandler(BeginRecordingDialog::OnRecordingTypeChange), NULL, this);
 
     recordingSuffix_->Connect(wxEVT_CHAR, wxKeyEventHandler(BeginRecordingDialog::OnRecordingSuffixChar), NULL, this);
 
@@ -144,11 +156,18 @@ BeginRecordingDialog::~BeginRecordingDialog()
     
     rawRecording_->Disconnect(wxEVT_RADIOBUTTON, wxCommandEventHandler(BeginRecordingDialog::OnRecordingTypeChange), NULL, this);
     decodedRecording_->Disconnect(wxEVT_RADIOBUTTON, wxCommandEventHandler(BeginRecordingDialog::OnRecordingTypeChange), NULL, this);
+    bothRecording_->Disconnect(wxEVT_RADIOBUTTON, wxCommandEventHandler(BeginRecordingDialog::OnRecordingTypeChange), NULL, this);
 
     recordingSuffix_->Disconnect(wxEVT_CHAR, wxKeyEventHandler(BeginRecordingDialog::OnRecordingSuffixChar), NULL, this);
 
     m_buttonOK->Disconnect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(BeginRecordingDialog::OnOK), NULL, this);
     m_buttonCancel->Disconnect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(BeginRecordingDialog::OnCancel), NULL, this);
+}
+
+wxString BeginRecordingDialog::getRecordingSuffix() const
+{
+    // Only typing is filtered as it happens; pasting isn't.
+    return SanitizeRecordingSuffix(recordingSuffix_->GetValue());
 }
 
 void BeginRecordingDialog::OnInitDialog(wxInitDialogEvent&)
@@ -199,14 +218,15 @@ void BeginRecordingDialog::OnRecordingSuffixChar(wxKeyEvent& event)
 void BeginRecordingDialog::OnRecordingTypeChange(wxCommandEvent&)
 {
 #if !defined(SNDFILE_NO_MP3_SUPPORT)
-    if (rawRecording_->GetValue())
+    if (decodedRecording_->GetValue())
     {
-        formatMp3_->Enable(false);
-        formatWav_->SetValue(true);
+        formatMp3_->Enable(true);
     }
     else
     {
-        formatMp3_->Enable(true);
+        // Off air and both recordings are WAV only.
+        formatMp3_->Enable(false);
+        formatWav_->SetValue(true);
     }
 #endif // !defined(SNDFILE_NO_MP3_SUPPORT)
 }

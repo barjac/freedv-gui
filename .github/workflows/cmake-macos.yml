@@ -1,33 +1,93 @@
 name: Build FreeDV (macOS)
 
 on:
+  # Run on the result of merging the pull request, rather than on its branch,
+  # so that what's already been merged into its base is tested too.
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths-ignore:
+    - "**.md"
+    - "**/README"
+  # Merges, in effect.
   push:
-    branches-ignore:
-    - 'dr-render-manual'
+    branches:
+    - master
+    - 'v*-dev'
+    paths-ignore:
+    - "**.md"
+    - "**/README"
+  # "Run workflow", for a branch without a pull request, for instance.
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: 'Which jobs to run (see "scope")'
+        type: choice
+        options: [full, pr]
+        default: full
 
+# A newer push to a pull request cancels the run for the one before. Merges
+# aren't cancelled, so that each gets a full set of results. Adding a label
+# other than full-ci runs nothing (see "scope"), so that gets a group of its
+# own rather than cancelling the run already under way.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ (github.event.action == 'labeled' && github.event.label.name != 'full-ci') && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
     
 env:
+  # ccache skips compiles that use precompiled headers (wxWidgets and
+  # FreeDV's GUI targets) unless these are set.
+  CCACHE_SLOPPINESS: pch_defines,time_macros
+
+  # What's cached is uploaded again after every run and counts towards the
+  # repository's 10 GB of Actions caches, so trade some time on a cache miss
+  # (ccache's default is zstd level 1) for smaller caches. Reading a cached
+  # result isn't slowed down by this.
+  CCACHE_COMPRESSLEVEL: 10
+
   # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
   BUILD_TYPE: RelWithDebInfo
 
 jobs:
+  # Which jobs to run ("tier"):
+  #
+  # - full: everything, including PGO builds, every sanitizer, the other
+  #   distributions, OS versions and architectures, and signing (given the
+  #   secrets). For merges to master and the v*-dev branches, pull requests
+  #   labelled "full-ci", and "Run workflow" unless told otherwise.
+  # - pr: lint, plain unsigned packages to try out, and the unit and GUI tests
+  #   in one configuration per platform (plus one with ASan and UBSan on
+  #   Linux). Enough to catch most problems in under an hour without holding
+  #   up everything else. For every other pull request.
+  # - none: a label other than full-ci was added, which needs no new run.
+  scope:
+    runs-on: ubuntu-slim
+    outputs:
+      tier: ${{ steps.scope.outputs.tier }}
+    steps:
+    - id: scope
+      env:
+        TIER: ${{ (github.event.action == 'labeled' && github.event.label.name != 'full-ci') && 'none' || (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.tier != 'pr') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'full' || 'pr' }}
+      run: echo "tier=$TIER" >> "$GITHUB_OUTPUT"
+
   lint:
-    runs-on: macos-15
+    needs: [scope]
+    if: ${{ needs.scope.outputs.tier != 'none' }}
+    runs-on: macos-26
 
     steps:
     - uses: actions/checkout@v6
 
+    # (No ccache here or in test below: they use Homebrew's wxWidgets, so
+    # there's little to cache, and what there is would crowd the caches of
+    # the builds that compile it out of the repository's 10 GB.)
     - name: Install needed packages
       run: |
-          brew install automake libtool numpy sox wxwidgets speexdsp portaudio libsndfile hamlib libebur128 
+          brew install automake libtool numpy sox wxwidgets speexdsp portaudio libsndfile hamlib libebur128 gettext
 
     - name: Install LLVM and Clang
-      uses: KyleMayes/install-llvm-action@v2
-      with:
-        version: "20.1"
+      run: |
+        brew install llvm@20 lld@20  # note: LLVM 21 introduces incompatibilities - see https://github.com/Homebrew/homebrew-core/issues/235411
+        echo "$(brew --prefix llvm@20)/bin" >> "$GITHUB_PATH"
 
     - name: Build macdylibbundler
       run: |
@@ -49,17 +109,28 @@ jobs:
     - name: Run clang-tidy on codebase
       working-directory: ${{github.workspace}}/build_osx
       run: |
-        run-clang-tidy -p .
+        # Homebrew's llvm@20 clang-tidy (unlike Apple's own clang or
+        # install-llvm-action's redistributable) doesn't auto-detect the
+        # active Xcode SDK, so without an explicit sysroot it can't find
+        # basic libc/Apple-framework declarations (ldiv, wcschr,
+        # TargetConditionals.h, ...) even though the real build above
+        # -- which gets its sysroot from CMake's own xcrun-based
+        # detection, independent of which clang compiled it -- succeeds
+        # fine with the same compiler.
+        run-clang-tidy -p . -extra-arg=-isysroot -extra-arg="$(xcrun --show-sdk-path)"
 
+  # On a pull request (the "pr" tier), only without sanitizers: the Linux
+  # tests cover ASan and UBSan there, and macOS runners are the scarcest.
   test:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15]  # ARM64
-        sanitizer: [WITH_ASAN=0, WITH_ASAN=1, WITH_TSAN=1, WITH_UBSAN=1]
+        os: [macos-26]  # ARM64
+        sanitizer: ${{ fromJSON(needs.scope.outputs.tier == 'full' && '["WITH_ASAN=0", "WITH_ASAN=1", "WITH_RTSAN=1", "WITH_TSAN=1", "WITH_UBSAN=1"]' || '["WITH_ASAN=0"]') }}
 
     runs-on: ${{ matrix.os }}
-    needs: ['lint']
+    needs: [scope]
+    if: ${{ needs.scope.outputs.tier != 'none' }}
 
     steps:
     - uses: actions/checkout@v6
@@ -71,47 +142,58 @@ jobs:
 
     - name: Install needed packages
       run: |
-        brew install automake libtool numpy sox wxwidgets speexdsp portaudio libsndfile hamlib libebur128
+        brew install automake libtool numpy sox wxwidgets speexdsp portaudio libsndfile hamlib libebur128 gettext
 
-    - name: Install VB-Cable
-      shell: bash
-      working-directory: ${{github.workspace}}
-      run: |
-          brew install vb-cable
-
-    - name: Install other virtual audio devices
-      shell: bash
-      working-directory: ${{github.workspace}}
-      run: ./build_macos_sound_drivers.sh
+    - uses: ./.github/actions/setup-macos-virtual-audio
+      # Four drivers for the GUI tests, which take a little longer to build.
+      timeout-minutes: 6
+      with:
+        blackhole-drivers: '4'
 
     - name: Build freedv-gui
       shell: bash
       working-directory: ${{github.workspace}}
-      run: BUILD_TYPE=RelWithDebInfo UT_ENABLE=1 UNIV_BUILD=0 BUILD_DEPS=0 ${{matrix.sanitizer}} ./build_osx.sh 
+      if: ${{ matrix.sanitizer != 'WITH_RTSAN=1' }}
+      run: BUILD_TYPE=RelWithDebInfo UT_ENABLE=1 UNIV_BUILD=0 BUILD_DEPS=0 ${{matrix.sanitizer}} ./build_osx.sh
 
-    - name: Workaround macOS permission issues
-      timeout-minutes: 1
-      run: |
-          ${{github.workspace}}/ci/macos-set-mic-permissions.sh
-
-    - name: Make sure resource hogs aren't running
+    # Need LLVM Clang to run RTSan
+    - name: Build freedv-gui
       shell: bash
-      run: |
-          ${{github.workspace}}/ci/macos-kill-resource-hogs.sh
+      working-directory: ${{github.workspace}}
+      if: ${{ matrix.sanitizer == 'WITH_RTSAN=1' }}
+      run: BUILD_TYPE=RelWithDebInfo UT_ENABLE=1 CC=$(brew --prefix llvm@20)/bin/clang CXX=$(brew --prefix llvm@20)/bin/clang++ UNIV_BUILD=0 BUILD_DEPS=0 ${{matrix.sanitizer}} ./build_osx.sh
+
+    - uses: ./.github/actions/setup-rade-python-env
+      with:
+        # The runners' own python3 (3.15 from macos-26-arm64 20261013 on) is
+        # newer than torch has packages for.
+        python-version: '3.13'
+        venv-path: rade_venv
+        working-directory: ${{github.workspace}}/build_osx
 
     - name: Execute unit tests
       shell: bash
       working-directory: ${{github.workspace}}/build_osx
       run: |
-          python3 -m venv rade_venv
           . ./rade_venv/bin/activate
-          pip3 install torch matplotlib
+          # For the GUI tests, which run FreeDV Reporter's server locally.
+          pip install aiohttp python-socketio aiosqlite
           if [[ "${{ matrix.sanitizer }}" == "WITH_ASAN=0" ]]; then
               export MAX_EXECUTION_TIMES=2
           else
               export MAX_EXECUTION_TIMES=1
           fi
-          PYTHONPATH=$(pwd)/rade_src UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1:suppressions=${{github.workspace}}/test/ubsan_suppressions.txt ASAN_OPTIONS=suppressions=${{github.workspace}}/test/asan_suppressions.txt LSAN_OPTIONS=suppressions=${{github.workspace}}/test/lsan_suppressions.txt TSAN_OPTIONS=halt_on_error=1:ignore_noninstrumented_modules=1 FREEDV_COMPUTER_TO_RADIO_DEVICE="VB-Cable" FREEDV_RADIO_TO_COMPUTER_DEVICE="VB-Cable" FREEDV_COMPUTER_TO_SPEAKER_DEVICE="BlackHole1 2ch" FREEDV_MICROPHONE_TO_COMPUTER_DEVICE="BlackHole2 2ch" ctest -V --repeat until-pass:$MAX_EXECUTION_TIMES
+          # The radio path is on BlackHole1 rather than VB-Cable, as on Windows, where VB-Cable was
+          # found inserting silence that makes RADE lose sync. Radio in and out must be the same
+          # BlackHole device: the "2ch" -> "2ch 2" pairing drops audio when both ends are AUHAL
+          # clients, as FreeDV's are.
+          PYTHONPATH=$(pwd)/rade_src UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1:suppressions=${{github.workspace}}/test/ubsan_suppressions.txt ASAN_OPTIONS=suppressions=${{github.workspace}}/test/asan_suppressions.txt LSAN_OPTIONS=suppressions=${{github.workspace}}/test/lsan_suppressions.txt TSAN_OPTIONS=halt_on_error=1:ignore_noninstrumented_modules=1 FREEDV_COMPUTER_TO_RADIO_DEVICE="BlackHole1 2ch" FREEDV_RADIO_TO_COMPUTER_DEVICE="BlackHole1 2ch" FREEDV_COMPUTER_TO_SPEAKER_DEVICE="VB-Cable" FREEDV_MICROPHONE_TO_COMPUTER_DEVICE="BlackHole2 2ch" ctest -V --repeat until-pass:$MAX_EXECUTION_TIMES -LE gui || status=$?
+          # The GUI tests get a second try even under the sanitizers: some measure
+          # levels and timing, which the sanitizers' slowing everything down can
+          # push past what they allow. (A sanitizer's own report fails every try.)
+          # live_view uses the public FreeDV Reporter server.
+          PYTHONPATH=$(pwd)/rade_src UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1:suppressions=${{github.workspace}}/test/ubsan_suppressions.txt ASAN_OPTIONS=suppressions=${{github.workspace}}/test/asan_suppressions.txt LSAN_OPTIONS=suppressions=${{github.workspace}}/test/lsan_suppressions.txt TSAN_OPTIONS=halt_on_error=1:ignore_noninstrumented_modules=1 FREEDV_COMPUTER_TO_RADIO_DEVICE="BlackHole1 2ch" FREEDV_RADIO_TO_COMPUTER_DEVICE="BlackHole1 2ch" FREEDV_COMPUTER_TO_SPEAKER_DEVICE="VB-Cable" FREEDV_MICROPHONE_TO_COMPUTER_DEVICE="BlackHole2 2ch" ctest -V --repeat until-pass:2 -L gui -E gui_reporter_live_view || status=$?
+          exit ${status:-0}
 
     #- name: Zip up traces
     #  shell: bash
@@ -129,11 +211,75 @@ jobs:
 
   # Only build and publish universal binary after making sure code works properly on both 
   # x86 and ARM. No point in doing so if there's a failure on either.
-  dist:
+  dist-pgo-instrument:
+    needs: [scope]
+    if: ${{ needs.scope.outputs.tier == 'full' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26-intel, macos-26]  # ARM64, x86_64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v6
+
+    #- name: Setup tmate session
+    #  uses: mxschmitt/action-tmate@v3
+    #  with:
+    #    detached: true
+
+    # There's a bug where macos-26 ends up downloading macos-26-intel's cache and thus 
+    # having few/no cache hits. To prevent this, we make sure that the cache key is unique
+    # enough on both platforms to avoid inadvertent matches.
+    - name: ccache
+      uses: hendrikmuhs/ccache-action@v1.2.23
+      if: ${{ matrix.os == 'macos-26-intel' }}
+      with:
+        key: ${{ github.job }}-x86_64
+        max-size: "1G"
+        create-symlink: true
+
+    - name: ccache
+      uses: hendrikmuhs/ccache-action@v1.2.23
+      if: ${{ matrix.os == 'macos-26' }}
+      with:
+        key: ${{ github.job }}-aarch64
+        max-size: "1G"
+        create-symlink: true
+
+    - name: Install needed packages
+      run: |
+        brew install automake libtool numpy sox llvm@20 lld@20 gettext # note: LLVM 21 introduces incompatibilities - see https://github.com/Homebrew/homebrew-core/issues/235411
+
+    - uses: ./.github/actions/setup-macos-virtual-audio
+      timeout-minutes: 3
+
+    - name: Build instrumented freedv-gui
+      shell: bash
+      working-directory: ${{github.workspace}}
+      run: |
+          BUILD_TYPE=Release UT_ENABLE=0 UNIV_BUILD=0 BUILD_DEPS=1 PGO_INSTRUMENT=1 ENABLE_LTO=1 USE_CCACHE=1 ./build_osx.sh
+
+    - name: Generate optimization profile
+      shell: bash
+      working-directory: ${{github.workspace}}
+      run: |
+          cd build_osx
+          LLVM_PROFILE_FILE="code-%p.profraw" FREEDV_COMPUTER_TO_RADIO_DEVICE="BlackHole1 2ch" FREEDV_RADIO_TO_COMPUTER_DEVICE="BlackHole1 2ch" FREEDV_COMPUTER_TO_SPEAKER_DEVICE="VB-Cable" FREEDV_MICROPHONE_TO_COMPUTER_DEVICE="BlackHole2 2ch" ../test/generate_pgo_profiles.sh 2>&1
+
+    - name: Stash profile data
+      uses: actions/upload-artifact@v7
+      with:
+        name: profdata-${{ matrix.os }}
+        path: ${{github.workspace}}/build_osx/*.profraw
+
+  dist-pgo-build:
     runs-on: macos-latest
     env:
       MACOS_NOTARYTOOL_PROFILE_NAME: "FreeDVCodeSigning"
-    #needs: ['lint']
+    needs: [dist-pgo-instrument, scope]
+    if: ${{ !cancelled() && needs.scope.result == 'success' && (needs.dist-pgo-instrument.result == 'success' || needs.scope.outputs.tier == 'pr') }}
 
     steps:
     - uses: actions/checkout@v6
@@ -145,10 +291,10 @@ jobs:
 
     - name: Install needed packages
       run: |
-        brew install automake libtool numpy sox llvm@20 lld@20  # note: LLVM 21 introduces incompatibilities - see https://github.com/Homebrew/homebrew-core/issues/235411
+        brew install automake libtool numpy sox llvm@20 lld@20 gettext # note: LLVM 21 introduces incompatibilities - see https://github.com/Homebrew/homebrew-core/issues/235411
 
     - name: Initialize code signing infrastructure
-      if: ${{ vars.FREEDV_MACOS_CODE_SIGNING_TEAM_ID != '' }}
+      if: ${{ vars.FREEDV_MACOS_CODE_SIGNING_TEAM_ID != '' && needs.scope.outputs.tier == 'full' }}
       env:
         MACOS_CODE_SIGNING_USERNAME: ${{ secrets.FREEDV_MACOS_CODE_SIGNING_USERNAME }}
         MACOS_CODE_SIGNING_PASSWORD: ${{ secrets.FREEDV_MACOS_CODE_SIGNING_PASSWORD }}
@@ -167,56 +313,43 @@ jobs:
         security find-identity -v macos-build.keychain
         xcrun notarytool store-credentials --apple-id "${{ env.MACOS_CODE_SIGNING_USERNAME }}" --password "${{ env.MACOS_CODE_SIGNING_PASSWORD }}" --team-id "${{ vars.FREEDV_MACOS_CODE_SIGNING_TEAM_ID }}" ${{ env.MACOS_NOTARYTOOL_PROFILE_NAME }}
 
-    - name: Install VB-Cable
-      shell: bash
-      working-directory: ${{github.workspace}}
+    - name: Download profile data
+      if: ${{ needs.scope.outputs.tier == 'full' }}
+      uses: actions/download-artifact@v8
+      with:
+        merge-multiple: false
+        pattern: profdata-*
+        path: ${{github.workspace}}
+
+    - name: Merge profile data
+      if: ${{ needs.scope.outputs.tier == 'full' }}
       run: |
-          brew install vb-cable
-
-    - name: Install other virtual audio devices
-      shell: bash
-      working-directory: ${{github.workspace}}
-      run: ./build_macos_sound_drivers.sh
-
-    - name: Workaround macOS permission issues
-      timeout-minutes: 1
-      run: |
-          ${{github.workspace}}/ci/macos-set-mic-permissions.sh
-
-    - name: Make sure resource hogs aren't running
-      shell: bash
-      run: |
-          ${{github.workspace}}/ci/macos-kill-resource-hogs.sh
-
-    #- name: Build instrumented freedv-gui
-    #  shell: bash
-    #  working-directory: ${{github.workspace}}
-    #  run: |
-    #      BUILD_TYPE=Release UT_ENABLE=0 BUILD_DEPS=1 PGO_INSTRUMENT=1 CC=$(brew --prefix llvm@20)/bin/clang CXX=$(brew --prefix llvm@20)/bin/clang++ OBJCXX=$(brew --prefix llvm@20)/bin/clang ./build_osx.sh
-
-    #- name: Generate optimization profile
-    #  shell: bash
-    #  working-directory: ${{github.workspace}}
-    #  run: |
-    #      cd build_osx
-    #      LLVM_PROFILE_FILE="code-%p.profraw" FREEDV_COMPUTER_TO_RADIO_DEVICE="VB-Cable" FREEDV_RADIO_TO_COMPUTER_DEVICE="VB-Cable" FREEDV_COMPUTER_TO_SPEAKER_DEVICE="BlackHole1 2ch" FREEDV_MICROPHONE_TO_COMPUTER_DEVICE="BlackHole2 2ch" ../test/generate_pgo_profiles.sh 2>&1
-    #      $(brew --prefix llvm@20)/bin/llvm-profdata merge -output ${{ github.workspace }}/code.profdata code-*.profraw
+          $(xcrun -find llvm-profdata) merge -output ${{ github.workspace }}/code.profdata ${{github.workspace}}/profdata-macos-26-intel/code-*.profraw ${{github.workspace}}/profdata-macos-26/code-*.profraw
 
     - name: Build freedv-gui (unsigned)
-      if: ${{ vars.FREEDV_MACOS_CODE_SIGNING_TEAM_ID == '' }}
+      if: ${{ vars.FREEDV_MACOS_CODE_SIGNING_TEAM_ID == '' && needs.scope.outputs.tier == 'full' }}
       shell: bash
       working-directory: ${{github.workspace}}
       run: |
           rm -rf build_osx
-          BUILD_TYPE=Release UT_ENABLE=0 UNIV_BUILD=1 BUILD_DEPS=1 ./build_osx.sh 
+          BUILD_TYPE=Release UT_ENABLE=0 UNIV_BUILD=1 BUILD_DEPS=1 ENABLE_LTO=1 PGO_USE_PROFILE=${{ github.workspace }}/code.profdata ./build_osx.sh 
+
+    # Not on a merge: a plain build, to try out.
+    - name: Build freedv-gui (unsigned, without PGO)
+      if: ${{ needs.scope.outputs.tier == 'pr' }}
+      shell: bash
+      working-directory: ${{github.workspace}}
+      run: |
+          rm -rf build_osx
+          BUILD_TYPE=Release UT_ENABLE=0 UNIV_BUILD=1 BUILD_DEPS=1 ./build_osx.sh
 
     - name: Build freedv-gui (signed)
-      if: ${{ vars.FREEDV_MACOS_CODE_SIGNING_TEAM_ID != '' }}
+      if: ${{ vars.FREEDV_MACOS_CODE_SIGNING_TEAM_ID != '' && needs.scope.outputs.tier == 'full' }}
       shell: bash
       working-directory: ${{github.workspace}}
       run: |
           rm -rf build_osx
-          BUILD_TYPE=Release UT_ENABLE=0 UNIV_BUILD=1 BUILD_DEPS=1 CODESIGN_IDENTITY=${{ vars.FREEDV_MACOS_CODE_SIGNING_TEAM_ID }} CODESIGN_KEYCHAIN_PROFILE=${{ env.MACOS_NOTARYTOOL_PROFILE_NAME }} ./build_osx.sh
+          BUILD_TYPE=Release UT_ENABLE=0 UNIV_BUILD=1 BUILD_DEPS=1 ENABLE_LTO=1 PGO_USE_PROFILE=${{ github.workspace }}/code.profdata CODESIGN_IDENTITY=${{ vars.FREEDV_MACOS_CODE_SIGNING_TEAM_ID }} CODESIGN_KEYCHAIN_PROFILE=${{ env.MACOS_NOTARYTOOL_PROFILE_NAME }} ./build_osx.sh
 
     - name: Package executable
       working-directory: ${{github.workspace}}/build_osx
@@ -224,7 +357,7 @@ jobs:
           make release
 
     - name: Validate DMG signature
-      if: ${{ vars.FREEDV_MACOS_CODE_SIGNING_TEAM_ID != '' }}
+      if: ${{ vars.FREEDV_MACOS_CODE_SIGNING_TEAM_ID != '' && needs.scope.outputs.tier == 'full' }}
       run: |
         codesign -v ${{github.workspace}}/build_osx/src/FreeDV.dmg --verbose
 
@@ -248,13 +381,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-15, macos-26]  # ARM64, ARM64, x86_64, ARM64
+        os: [macos-14, macos-15, macos-26]  # ARM64, ARM64, ARM64
 
     runs-on: ${{ matrix.os }}
-    needs: ['dist', 'lint']
+    needs: [dist-pgo-build, scope]
+    if: ${{ needs.scope.outputs.tier == 'full' }}
 
     steps:
     - uses: actions/checkout@v6
+
+    - uses: actions/download-artifact@v8
+      with:
+        merge-multiple: true
+        pattern: FreeDV*.dmg
+        path: ${{github.workspace}}
 
     - uses: actions/download-artifact@v8
       with:
@@ -273,32 +413,19 @@ jobs:
       run: |
         brew install automake libtool sox 
 
-    - name: Install VB-Cable
-      shell: bash
-      working-directory: ${{github.workspace}}
-      run: |
-          brew install vb-cable
+    - uses: ./.github/actions/setup-macos-virtual-audio
+      timeout-minutes: 3
 
-    - name: Install other virtual audio devices
-      shell: bash
-      working-directory: ${{github.workspace}}
-      run: ./build_macos_sound_drivers.sh
-
-    - name: Workaround macOS permission issues
-      timeout-minutes: 1
-      run: |
-          ${{github.workspace}}/ci/macos-set-mic-permissions.sh
-
-    - name: Make sure resource hogs aren't running
-      shell: bash
-      run: |
-          ${{github.workspace}}/ci/macos-kill-resource-hogs.sh
+    - uses: ./.github/actions/setup-rade-python-env
+      with:
+        # The runners' own python3 (3.15 from macos-26-arm64 20261013 on) is
+        # newer than torch has packages for.
+        python-version: '3.13'
+        venv-path: rade_venv
 
     - name: Sanity check RADE
       shell: bash
       run: |
-          python3 -m venv rade_venv
           . ./rade_venv/bin/activate
-          pip3 install torch matplotlib
-          FREEDV_COMPUTER_TO_RADIO_DEVICE="VB-Cable" FREEDV_RADIO_TO_COMPUTER_DEVICE="VB-Cable" FREEDV_COMPUTER_TO_SPEAKER_DEVICE="BlackHole1 2ch" FREEDV_MICROPHONE_TO_COMPUTER_DEVICE="BlackHole2 2ch" FREEDV_BINARY=./FreeDV-dmg/FreeDV.app/Contents/MacOS/FreeDV PYTHONPATH=$(pwd)/build_osx/rade_src ./test/test_rade_loss.sh 2>&1 | tee temp-test.txt
+          FREEDV_COMPUTER_TO_RADIO_DEVICE="BlackHole1 2ch" FREEDV_RADIO_TO_COMPUTER_DEVICE="BlackHole1 2ch" FREEDV_COMPUTER_TO_SPEAKER_DEVICE="VB-Cable" FREEDV_MICROPHONE_TO_COMPUTER_DEVICE="BlackHole2 2ch" FREEDV_BINARY=./FreeDV-dmg/FreeDV.app/Contents/MacOS/FreeDV PYTHONPATH=$(pwd)/build_osx/rade_src ./test/test_rade_loss.sh 2>&1 | tee temp-test.txt
           grep "PASS" temp-test.txt

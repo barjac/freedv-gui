@@ -19,20 +19,22 @@
 //
 //==========================================================================
 
+#include <wx/app.h>
 #include <wx/stattext.h>
 #include <wx/sizer.h>
 #include <wx/panel.h>
 #include <wx/statbox.h>
 
+#include "defines.h"
+
 #include "monitor_volume_adj.h"
 
-MonitorVolumeAdjPopup::MonitorVolumeAdjPopup( wxWindow* parent, ConfigurationDataElement<float>& configVal )
+MonitorVolumeAdjPopup::MonitorVolumeAdjPopup( wxWindow* parent, ConfigurationDataElement<float>& configVal, std::atomic<float>& liveVal )
     : wxPopupTransientWindow(parent)
     , configVal_(configVal)
+    , liveVal_(liveVal)
 {
-    // XXX - FreeDV only supports English but makes a best effort to at least use regional formatting
-    // for e.g. numbers. Thus, we only need to override layout direction.
-    SetLayoutDirection(wxLayout_LeftToRight);
+    WXWIDGETS_SET_LAYOUT_DIRECTION;
     
     wxStaticBoxSizer* mainSizer = new wxStaticBoxSizer(wxVERTICAL, this, _("Monitor volume (dB)"));
     
@@ -41,6 +43,10 @@ MonitorVolumeAdjPopup::MonitorVolumeAdjPopup( wxWindow* parent, ConfigurationDat
         
     SetSizerAndFit(mainSizer);
     Layout();
+
+    // Names for automated GUI testing.
+    SetName("monitorVolume");
+    volumeSlider_->SetName("monitorVolume.slider");
     
     // Link event handlers
     volumeSlider_->Connect(wxEVT_SLIDER, wxCommandEventHandler(MonitorVolumeAdjPopup::OnSliderAdjusted), NULL, this);
@@ -57,7 +63,17 @@ MonitorVolumeAdjPopup::~MonitorVolumeAdjPopup()
     volumeSlider_->Disconnect(wxEVT_SLIDER, wxCommandEventHandler(MonitorVolumeAdjPopup::OnSliderAdjusted), NULL, this);
 }
 
+void MonitorVolumeAdjPopup::OnDismiss()
+{
+    // A new one is created each time it's asked for, so this one's done
+    // with (but is still in use by whatever's dismissing it).
+    wxTheApp->CallAfter([this]() {
+        Destroy();
+    });
+}
+
 void MonitorVolumeAdjPopup::OnSliderAdjusted(wxCommandEvent&)
 {
     configVal_ = volumeSlider_->GetValue();
+    liveVal_.store(configVal_, std::memory_order_release);
 }

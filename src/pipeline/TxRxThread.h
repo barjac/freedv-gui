@@ -41,9 +41,12 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <chrono>
+#include <ctime>
 
 #include "AudioPipeline.h"
 #include "util/IRealtimeHelper.h"
+#include "util/realtime_fp.h"
 #include "util/Semaphore.h"
 #include "freedv_sanitizers.h"
 
@@ -56,19 +59,42 @@ class BeepStep;
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=--=-=-=-=
 // class txRxThread - tx/rx processing thread
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=--=-=-=-=
+
+// Callbacks that replace TxRxThread reaching directly into the wx UI
+// (g_parent/MainFrame) and MainApp's tone-interferer settings. The app wires
+// these to MainFrame::CallAfter() and MainApp members; unit tests wire them
+// to counters. All are called from the real-time processing thread.
+struct TxRxThreadUiHooks
+{
+    std::function<void()> playFileToMicInFinished;
+    std::function<void()> recFileFromRadioFinished;
+    std::function<void()> playFileFromRadioFinished;
+
+    // Tone getters are realtime_fp (raw function pointers): ToneInterfererStep
+    // and EitherOrStep only accept RT-safe function pointers, so the app wires
+    // these to captureless lambdas reading MainApp's atomics.
+    realtime_fp<float()> toneFreqHz;
+    realtime_fp<float()> toneAmplitude;
+    realtime_fp<bool()> toneEnabled;
+};
+
 class TxRxThread
 {
 public:
-    TxRxThread(bool tx, int inputSampleRate, int outputSampleRate, std::shared_ptr<LinkStep> micAudioLink, std::shared_ptr<IRealtimeHelper> helper) 
+    TxRxThread(bool tx, int inputSampleRate, int outputSampleRate, std::shared_ptr<LinkStep> micAudioLink, std::shared_ptr<IRealtimeHelper> helper, TxRxThreadUiHooks uiHooks)
         : m_tx(tx)
         , m_run(1)
         , pipeline_(nullptr)
         , inputSampleRate_(inputSampleRate)
         , outputSampleRate_(outputSampleRate)
         , equalizedMicAudioLink_(std::move(micAudioLink))
+        , uiHooks_(std::move(uiHooks))
+        , beepStep_(nullptr)
         , hasEooBeenSent_(false)
+        , pendingEooCount_(0)
         , helper_(std::move(helper))
         , deferReset_(false)
+        , reachedMinimumTxInput_(false)
     { 
         assert(inputSampleRate_ > 0);
         assert(outputSampleRate_ > 0);
@@ -79,6 +105,15 @@ public:
         inputSamplesZeros_ = std::make_unique<short[]>(numSamples);
         assert(inputSamplesZeros_ != nullptr);
         memset(inputSamplesZeros_.get(), 0, numSamples * sizeof(short));
+
+        // Holds resampled EOO output that couldn't be written to outfifo1 yet
+        // (e.g. because it was momentarily full) so it can be retried on a
+        // later call instead of being silently dropped. The pipeline hands
+        // back the entire EOO block in a single execute() call, and its
+        // resampling stage caps output at one second's worth of samples, so
+        // sizing this to outputSampleRate_ is sufficient headroom.
+        pendingEooSamples_ = std::make_unique<short[]>(outputSampleRate_);
+        assert(pendingEooSamples_ != nullptr);
     }
     
     virtual ~TxRxThread()
@@ -95,7 +130,7 @@ public:
 
     void stop()
     {
-        m_run = false;
+        m_run.store(false, std::memory_order_release);
         if (thread_.joinable())
         {
             thread_.join();
@@ -115,8 +150,11 @@ private:
     int inputSampleRate_;
     int outputSampleRate_;
     std::shared_ptr<LinkStep> equalizedMicAudioLink_;
+    TxRxThreadUiHooks uiHooks_;
     BeepStep* beepStep_;
     bool hasEooBeenSent_;
+    std::unique_ptr<short[]> pendingEooSamples_;
+    int pendingEooCount_;
     std::shared_ptr<IRealtimeHelper> helper_;
     std::unique_ptr<short[]> inputSamples_;
     std::unique_ptr<short[]> inputSamplesZeros_;
@@ -126,26 +164,67 @@ private:
     Semaphore readySem_;
     Semaphore startSem_;
 
+    bool reachedMinimumTxInput_;
+
 #if defined(ENABLE_PROCESSING_STATS)
-    int numTimeSamples_;
-    double minDuration_;
-    std::time_t minTime_;
-    double maxDuration_;
-    std::time_t maxTime_;
-    double sumDuration_;
-    double sumDoubleDuration_;
-    std::chrono::time_point<std::chrono::high_resolution_clock> timeStart_;
-    
-    void resetStats_();
-    void startTimer_();
-    void endTimer_();
-    void reportStats_();    
+    // Tracks min/max/mean/stdev plus a histogram for one timed interval.
+    // Used for two separate things: actual per-frame processing time
+    // (pipeline_->execute()), and the gap between wake cycles that the
+    // thread spends inside helper->stopRealTimeWork()'s semaphore wait --
+    // the latter previously wasn't measured at all, so a scheduling delay
+    // (the thread taking longer than expected to be woken/resumed, as
+    // opposed to processing taking longer than expected once running)
+    // would have been completely invisible.
+    //
+    // min/max/mean/stdev alone can't distinguish "one freak outlier" from
+    // "a real cluster of slow samples" -- a rare but non-negligible tail
+    // gets averaged away by mean/stdev over a large sample count, and only
+    // the single worst sample shows up in max. The histogram makes that
+    // distribution visible.
+    struct TimingStats
+    {
+        bool started = false;
+        int numSamples = 0;
+        double minDuration = 1e9;
+        std::time_t minTime = 0;
+        double maxDuration = 0;
+        std::time_t maxTime = 0;
+        double sumDuration = 0;
+        double sumDoubleDuration = 0;
+        std::chrono::time_point<std::chrono::high_resolution_clock> timeStart;
+
+        // Upper bound (in ms) of each histogram bucket except the last,
+        // which catches everything at or above the final bound.
+        static constexpr double HISTOGRAM_BUCKET_BOUNDS_MS[] =
+            { 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000 };
+        static constexpr int NUM_HISTOGRAM_BUCKETS =
+            sizeof(HISTOGRAM_BUCKET_BOUNDS_MS) / sizeof(HISTOGRAM_BUCKET_BOUNDS_MS[0]) + 1;
+        int histogramCounts[NUM_HISTOGRAM_BUCKETS] = {};
+
+        void reset();
+        void start();
+        // No-op if start() wasn't called first (e.g. the very first wake
+        // cycle has no preceding wait to measure).
+        void end();
+        void report(bool m_tx, const char* label) const;
+    };
+
+    TimingStats processingStats_;
+    TimingStats waitStats_;
 #endif // defined(ENABLE_PROCESSING_STATS)
     
     void initializePipeline_();
+    // One iteration of the processing loop (startRealTimeWork ->
+    // tx/rxProcessing_ -> stopRealTimeWork). Extracted from Entry() so unit
+    // tests can drive a full cycle without spawning the thread.
+    void runOnce_(IRealtimeHelper* helper) FREEDV_NONBLOCKING;
     void txProcessing_(IRealtimeHelper* helper) FREEDV_NONBLOCKING;
     void rxProcessing_(IRealtimeHelper* helper) FREEDV_NONBLOCKING;
     void clearFifos_() FREEDV_NONBLOCKING;
+
+    // Lets TxRxThreadTest drive runOnce_/txProcessing_/rxProcessing_/
+    // initializePipeline_ directly.
+    friend class TxRxThreadTest;
 };
 
 #endif // AUDIO_PIPELINE__TX_RX_THREAD_H

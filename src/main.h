@@ -23,6 +23,7 @@
 #define __FDMDV2_MAIN__
 
 #include "config.h"
+#include <atomic>
 #include <wx/wx.h>
 
 #include <wx/tglbtn.h>
@@ -49,6 +50,7 @@
 #include <wx/numformatter.h>
 
 #include <stdint.h>
+#include <future>
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86)
 #include <cpuid.h>
 #endif
@@ -72,8 +74,8 @@
 #include "gui/dialogs/tot_warning.h"
 #include "gui/controls/plot.h"
 #include "gui/controls/plot_scalar.h"
-#include "gui/controls/plot_scatter.h"
 #include "gui/controls/plot_waterfall.h"
+#include "comp.h"
 #include "gui/controls/plot_spectrum.h"
 #include "sndfile.h"
 #include "sox_biquad.h"
@@ -92,6 +94,10 @@
 #include "pipeline/LinkStep.h"
 #include "freedv_sanitizers.h"
 #include "gui/util/wxMessageBoxWrapper.h"
+#include "gui/util/PopupMenuWrapper.h"
+#include "gui/util/PathDialogWrapper.h"
+#include "gui/util/BrowserWrapper.h"
+#include "voicekeyer_cache.h"
 
 #define _USE_TIMER              1
 #define _USE_ONIDLE             1
@@ -124,7 +130,7 @@ enum {
 #define EXCHANGE_DATA_IN    0
 #define EXCHANGE_DATA_OUT   1
 
-extern int                 g_nSoundCards;
+extern std::atomic<int>      g_nSoundCards;
 
 // Last-used configuration file helpers.
 // The path is stored in a platform-appropriate state store
@@ -164,6 +170,7 @@ void      clearLastUsedConfigPath();
 class MainFrame;
 class FilterDlg;
 class FreeDVReporterDialog;
+class TestAgent;
 
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=--=-=-=-=
 // Class MainApp
@@ -199,6 +206,15 @@ class MainApp : public wxApp
         FreeDVConfiguration appConfiguration;
         wxString customConfigFileName;
         wxString defaultConfigFilePath;
+
+        // Where the default configuration is, if FreeDV has to say (rather
+        // than leaving it to wxWidgets). See MainApp::OnCmdLineParsed().
+        wxString defaultConfigFile;
+
+        // The default configuration itself, if it's been opened. It can't
+        // reliably be found again later: wxWidgets looks for it by the
+        // application's name, which isn't the same at startup as afterwards.
+        wxConfigBase* defaultConfig = nullptr;
         
         // PTT -----------------------------------    
         int        m_intHamlibRig;
@@ -231,9 +247,9 @@ class MainApp : public wxApp
 
         // tone interferer simulation
 
-        bool       m_tone;
-        int        m_tone_freq_hz;
-        int        m_tone_amplitude;
+        std::atomic<bool> m_tone; // read by RX thread
+        std::atomic<int> m_tone_freq_hz; // read by RX thread
+        std::atomic<int> m_tone_amplitude; // read by RX thread
 
         // debugging 700D audio break up
 
@@ -250,6 +266,9 @@ class MainApp : public wxApp
         int m_reportCounter;
     protected:
     private:
+        // Lets a GUI test script drive FreeDV (see test_agent.h).
+        std::shared_ptr<TestAgent> testAgent_;
+
         void UnitTest_();
 };
 
@@ -288,6 +307,10 @@ class MainFrame : public TopFrame
         virtual ~MainFrame();
 
         FilterDlg*              m_filterDialog;
+
+        // Updates the speaker level control to match the configuration.
+        void syncSpeakerLevelWithConfiguration();
+
         FreeDVReporterDialog*   m_reporterDialog;
         PlotSpectrum*           m_panelSpectrum;
         PlotWaterfall*          m_panelWaterfall;
@@ -296,7 +319,10 @@ class MainFrame : public TopFrame
         PlotScalar*             m_panelDemodIn;
         PlotScalar*             m_panelSNR;
 
-        bool                    m_RxRunning;
+        // Set by startRxStream()/stopRxStream(), mostly on the thread that
+        // starts and stops FreeDV (see OnTogBtnOnOff()), and read all over
+        // the UI thread, so atomic.
+        std::atomic<bool>       m_RxRunning;
         bool                    txChangeoverOccurring_;
         
         bool                    OpenHamlibRig();
@@ -363,7 +389,6 @@ class MainFrame : public TopFrame
 
     void togglePTT(void);
 
-    bool                    m_schedule_restore;
 
     // Voice Keyer state machine
 
@@ -384,9 +409,7 @@ class MainFrame : public TopFrame
         // protected event handlers
         virtual void topFrame_OnSize( wxSizeEvent& event ) override;
         virtual void topFrame_OnClose( wxCloseEvent& event ) override;
-        virtual void OnCloseFrame(wxCloseEvent& event);
         virtual void OnActivateWindow(wxActivateEvent& event) override;
-        void OnExitClick(wxCommandEvent& event);
 
         void startTxStream();
         void startRxStream();
@@ -447,7 +470,6 @@ class MainFrame : public TopFrame
         void OnBerReset( wxCommandEvent& event ) override;
 
         //System Events
-        void OnPaint(wxPaintEvent& event);
         void OnSize( wxSizeEvent& event );
         void OnUpdateUI( wxUpdateUIEvent& event );
         void OnDeleteConfig(wxCommandEvent&);
@@ -480,6 +502,9 @@ class MainFrame : public TopFrame
         
         void OnReportFrequencySetFocus(wxFocusEvent& event) override;
         void OnReportFrequencyKillFocus(wxFocusEvent& event) override;
+        void OnReportFrequencyContextMenu(wxContextMenuEvent& event) override;
+        void OnReportFrequencyItemMenu(int item) override;
+        void OnReportFrequencyItemDelete(int item) override;
 
         void OnSystemColorChanged(wxSysColourChangedEvent& event) override;
         
@@ -522,7 +547,6 @@ class MainFrame : public TopFrame
         const wxString SYNC_UNK_LABEL;
         const wxString VAR_UNK_LABEL;
         const wxString CLK_OFF_UNK_LABEL;
-        const wxString TOO_HIGH_LABEL;
         const wxString MIC_SPKR_LEVEL_FORMAT_STR;
         const wxString DECIBEL_STR;
         const wxString CURRENT_TIME_FORMAT_STR;
@@ -548,7 +572,6 @@ class MainFrame : public TopFrame
         unsigned int         m_timeSinceSyncLoss;
         bool        m_useMemory;
         wxTextCtrl* m_tc;
-        int         m_zoom;
         float       m_snrBeta;
 
         // Callsign/text messaging
@@ -564,10 +587,9 @@ class MainFrame : public TopFrame
 
         // flags to indicate when new EQ filters need to be designed
 
-        bool        m_newMicInFilter;
-        bool        m_newSpkOutFilter;
+        std::atomic<bool> m_newMicInFilter;
+        std::atomic<bool> m_newSpkOutFilter;
 
-        void*       designAnEQFilter(const char filterType[], float freqHz, float gaindB, float Q = 0.0, int sampleRate = 8000);
         void        designEQFilters(paCallBackData *cb, int rxSampleRate, int txSampleRate);
         void        deleteEQFilters(paCallBackData *cb);
 
@@ -590,6 +612,7 @@ class MainFrame : public TopFrame
         int tuneLoadedLevel_{-200};
         
         std::string vkFileName_;
+        VoiceKeyerFileCache vkFileCache_;
         
         wxMenu* voiceKeyerPopupMenu_;
         wxMenu* pttPopupMenu_;
@@ -599,8 +622,18 @@ class MainFrame : public TopFrame
         wxMenuItem* recordNewVoiceKeyerFileMenuItem_;
 
         bool terminating_; // used for terminating FreeDV
+        bool closingReporterDialog_; // set while closing waits for the Reporter dialog's last messages
         bool realigned_; // used to inhibit resize hack once already done
         bool syncState_; // GUI copy of current sync state
+
+        // Signalled once the detached rig PTT/frequency controller disconnect
+        // threads (see performFreeDVOff_()) finish tearing down. Only waited on,
+        // with a bounded timeout, when terminating_ is set -- lets a responsive
+        // rig disconnect cleanly before the process exits out from under the
+        // detached thread, without reintroducing an unbounded hang against an
+        // unresponsive one.
+        std::future<void> rigPttDisconnectFuture_;
+        std::future<void> rigFreqDisconnectFuture_;
 
         // Caches appConfiguration.experimentalFeatures as of the last tab layout load
         // attempt, so exit-time save uses that instead of a possibly-since-toggled live
@@ -608,7 +641,7 @@ class MainFrame : public TopFrame
         bool tabLayoutPersistenceEnabledAtStartup_;
         
         int         getSoundCardIDFromName(wxString& name, bool input);
-        bool        validateSoundCardSetup();
+        bool        validateSoundCardSetup(bool silent = false);
         
         void loadConfiguration_();
         void restoreCallsignListFromCsv_();
@@ -624,6 +657,8 @@ class MainFrame : public TopFrame
         void executeOnUiThreadAndWait_(std::function<void()> fn);
         
         void updateReportingFreqList_();
+        wxString reportFrequencyListString_(wxString const& text);
+        void addReportFrequencyToList_(wxString const& freq);
         void updateFreqBoxLabel_();
         void updateFreqBoxTooltip_();
         
@@ -633,6 +668,7 @@ class MainFrame : public TopFrame
         
         void onFrequencyModeChange_(IRigFrequencyController*, uint64_t freq, IRigFrequencyController::Mode mode);
         void onRadioConnected_(IRigController* ptr);
+        void onRigPttChange_(bool pttState);
         void onRadioDisconnected_(IRigController* ptr);
 
         // Audio error handlers
@@ -676,6 +712,15 @@ class MainFrame : public TopFrame
 #endif // 0
         }
         
+        // A contact can only be logged by sending it to a
+        // logging program over UDP, so only allow Log QSO if that's enabled.
+        bool canLogQso_()
+        {
+            return
+                wxGetApp().appConfiguration.reportingConfiguration.udpReportingEnabled &&
+                m_lastReportedCallsignListView->GetItemCount() > 0;
+        }
+        
         int getIdealStationsHeardColumnLength_(int col);
 };
 
@@ -694,6 +739,5 @@ void my_put_next_rx_char(void *callback_state, char c);
 
 // helper complex freq shift function
 
-void freq_shift_coh(COMP rx_fdm_fcorr[], COMP rx_fdm[], float foff, float Fs, COMP *foff_phase_rect, int nin) FREEDV_NONBLOCKING;
 
 #endif //__FDMDV2_MAIN__

@@ -34,6 +34,10 @@
 
 #include "util/logging/ulog.h"
 
+#if defined(HAMLIB_USE_SEPARATE_RIG_STATE_H)
+#include <hamlib/rig_state.h>
+#endif // defined(HAMLIB_USE_SEPARATE_RIG_STATE_H)
+
 #if defined(HAMLIB_USE_FRIENDLY_ERRORS)
 #define HAMLIB_FRIENDLY_ERROR_FN rigerror2
 #else
@@ -112,6 +116,7 @@ HamlibRigController::HamlibRigController(int rigIndex, std::string serialPort, c
     , pttSet_(false)
     , currFreq_(0)
     , currMode_(RIG_MODE_NONE)
+    , pendingMode_(UNKNOWN)
     , restoreOnDisconnect_(restoreFreqModeOnDisconnect)
     , origFreq_(0)
     , origMode_(RIG_MODE_NONE)
@@ -240,6 +245,7 @@ void HamlibRigController::ptt(bool state)
 
 void HamlibRigController::setFrequency(uint64_t frequency)
 {
+    noteRequestedFrequency_(frequency);
     enqueue_(std::bind(&HamlibRigController::setFrequencyImpl_, this, frequency));
 }
 
@@ -300,6 +306,49 @@ int HamlibRigController::GetMaximumSerialBaudRate(unsigned int rigIndex)
 {
     InitializeHamlibLibrary();
     return RigList_[rigIndex]->serial_rate_max;
+}
+
+HamlibRigController::PortType HamlibRigController::GetRigPortType(unsigned int rigIndex)
+{
+    InitializeHamlibLibrary();
+    switch (RigList_[rigIndex]->port_type)
+    {
+        case RIG_PORT_SERIAL:
+            return PORT_SERIAL;
+        case RIG_PORT_NETWORK:
+        case RIG_PORT_UDP_NETWORK:
+            return PORT_NETWORK;
+        case RIG_PORT_USB:
+            return PORT_USB;
+        default:
+            return PORT_OTHER;
+    }
+}
+
+// Returns the port Hamlib uses for the given rig if none is specified
+// (e.g. "127.0.0.1:4532" for NET rigctl).
+std::string HamlibRigController::GetDefaultRigPathname(unsigned int rigIndex)
+{
+    InitializeHamlibLibrary();
+
+    std::string pathname;
+    auto tmpRig = rig_init(RigList_[rigIndex]->rig_model);
+    if (tmpRig != nullptr)
+    {
+        constexpr int PATHNAME_BUF_LEN = 1024;
+        char buf[PATHNAME_BUF_LEN] = {0};
+#if defined(HAMLIB_USE_FRIENDLY_ERRORS)
+        auto result = rig_get_conf2(tmpRig, rig_token_lookup(tmpRig, "rig_pathname"), buf, PATHNAME_BUF_LEN);
+#else
+        auto result = rig_get_conf(tmpRig, rig_token_lookup(tmpRig, "rig_pathname"), buf);
+#endif // defined(HAMLIB_USE_FRIENDLY_ERRORS)
+        if (result == RIG_OK)
+        {
+            pathname = buf;
+        }
+        rig_cleanup(tmpRig);
+    }
+    return pathname;
 }
 
 int HamlibRigController::GetNumberSupportedRadios()
@@ -428,23 +477,26 @@ void HamlibRigController::connectImpl_()
 
     // Set timeouts so that we don't wait an extremely long time to begin TX.
     // However, only do so if the default timeout is larger than 625ms.
-    const char* MAX_TIMEOUT = "625";
-    const char* HAMLIB_TIMEOUT_TOKEN_NAME = "timeout";
-    constexpr int TIMEOUT_BUF_LEN = 1024;
-    char currentTimeout[TIMEOUT_BUF_LEN];
+    auto limitTimeout = [tmpRig]() {
+        const char* MAX_TIMEOUT = "625";
+        const char* HAMLIB_TIMEOUT_TOKEN_NAME = "timeout";
+        constexpr int TIMEOUT_BUF_LEN = 1024;
+        char currentTimeout[TIMEOUT_BUF_LEN] = { 0 };
 #if defined(HAMLIB_USE_FRIENDLY_ERRORS)
-    // Hamlib 4.6+ has rig_get_conf2. rig_get_conf is officially deprecated in 5.0+ and 
-    // causes compile errors in FreeDV due to -Werror.
-    auto result = rig_get_conf2(tmpRig, rig_token_lookup(tmpRig, HAMLIB_TIMEOUT_TOKEN_NAME), currentTimeout, TIMEOUT_BUF_LEN);
+        // Hamlib 4.6+ has rig_get_conf2. rig_get_conf is officially deprecated in 5.0+ and 
+        // causes compile errors in FreeDV due to -Werror.
+        auto result = rig_get_conf2(tmpRig, rig_token_lookup(tmpRig, HAMLIB_TIMEOUT_TOKEN_NAME), currentTimeout, TIMEOUT_BUF_LEN);
 #else
-    auto result = rig_get_conf(tmpRig, rig_token_lookup(tmpRig, HAMLIB_TIMEOUT_TOKEN_NAME), currentTimeout);
+        auto result = rig_get_conf(tmpRig, rig_token_lookup(tmpRig, HAMLIB_TIMEOUT_TOKEN_NAME), currentTimeout);
 #endif // defined(HAMLIB_USE_FRIENDLY_ERRORS)
-    log_info("Current rig timeout: %s ms", currentTimeout);
-    if (result != RIG_OK || (atoi(currentTimeout) >= atoi(MAX_TIMEOUT)))
-    {
-        log_info("Setting rig timeout to %s ms", MAX_TIMEOUT);
-        rig_set_conf(tmpRig, rig_token_lookup(tmpRig, HAMLIB_TIMEOUT_TOKEN_NAME), MAX_TIMEOUT);
-    }
+        log_info("Current rig timeout: %s ms", currentTimeout);
+        if (result != RIG_OK || (atoi(currentTimeout) >= atoi(MAX_TIMEOUT)))
+        {
+            log_info("Setting rig timeout to %s ms", MAX_TIMEOUT);
+            rig_set_conf(tmpRig, rig_token_lookup(tmpRig, HAMLIB_TIMEOUT_TOKEN_NAME), MAX_TIMEOUT);
+        }
+    };
+    limitTimeout();
 
     // Initially allow two retries if we time out while sending commands. This is needed
     // to better support Icom marine radios due to their ability to power themselves on
@@ -453,16 +505,27 @@ void HamlibRigController::connectImpl_()
     rig_set_conf(tmpRig, rig_token_lookup(tmpRig, "retry"), "2");
     rig_set_conf(tmpRig, rig_token_lookup(tmpRig, "timeout_retry"), "2");
             
-    result = rig_open(tmpRig);
+    auto result = rig_open(tmpRig);
     if (result == RIG_OK) 
     {
         log_debug("hamlib: rig_open() OK");
+
+        // Some versions of Hamlib replace the timeout with the radio's
+        // default on opening it, so make sure that it's still limited.
+        limitTimeout();
+
         onRigConnected(this);
         
         // Determine whether we have multiple VFOs.
         multipleVfos_ = false;
         vfo_t vfo;
-        if (rig_get_vfo (tmpRig, &vfo) == RIG_OK && (tmpRig->state.vfo_list & RIG_VFO_B))
+        if (rig_get_vfo (tmpRig, &vfo) == RIG_OK && 
+#if HAMLIB_CONST_WORKAROUND 
+            /* 4.6+ */
+            (HAMLIB_STATE(tmpRig)->vfo_list & RIG_VFO_B))
+#else
+            (tmpRig->state.vfo_list & RIG_VFO_B))
+#endif // HAMLIB_CONST_WORKAROUND
         {
             multipleVfos_ = true;
         }
@@ -539,6 +602,11 @@ void HamlibRigController::disconnectImpl_()
         
         origFreq_ = 0;
         origMode_ = RIG_MODE_NONE;
+
+        // Only requests made from here on should be pushed on the next connect.
+        currFreq_ = 0;
+        currMode_ = RIG_MODE_NONE;
+        pendingMode_ = UNKNOWN;
         
         rig_.store(nullptr, std::memory_order_release);
         rig_close(tmpRig);
@@ -572,7 +640,7 @@ void HamlibRigController::pttImpl_(bool state)
     }
     auto newTime = std::chrono::steady_clock::now();
     auto totalTimeMicroseconds = (int)std::chrono::duration_cast<std::chrono::microseconds>(newTime - oldTime).count();
-    rigResponseTime_ = std::max(rigResponseTime_, totalTimeMicroseconds);
+    rigResponseTime_ = std::max(rigResponseTime_.load(), totalTimeMicroseconds);
     
     if (result != RIG_OK) 
     {
@@ -608,6 +676,8 @@ void HamlibRigController::setFrequencyImpl_(uint64_t frequencyHz)
     auto tmpRig = rig_.load(std::memory_order_acquire);
     if (tmpRig == nullptr)
     {
+        // Not connected yet; this will be pushed to the radio on connect.
+        currFreq_ = frequencyHz;
         return;
     }
 

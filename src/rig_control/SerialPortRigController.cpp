@@ -41,10 +41,7 @@ SerialPortRigController::~SerialPortRigController()
     auto fut = prom->get_future();
 
     enqueue_([this, prom]() {
-        if (serialPortHandle_ != COM_HANDLE_INVALID)
-        {
-            disconnectImpl_();
-        }
+        disconnectImpl_();
         prom->set_value();
     });
     
@@ -276,7 +273,7 @@ error:
     {
         struct termios t;
 
-        if((serialPortHandle_=open(serialPort_.c_str(), O_NONBLOCK|O_RDWR))== COM_HANDLE_INVALID)
+        if((serialPortHandle_=open(serialPort_.c_str(), O_NONBLOCK|O_RDWR|O_NOCTTY))== COM_HANDLE_INVALID)
         {
             std::string errMsg = "Could not open serial port " + serialPort_;
             onRigError(this, errMsg);
@@ -336,6 +333,13 @@ error:
 
 void SerialPortRigController::disconnectImpl_()
 {
+    if (serialPortHandle_ == COM_HANDLE_INVALID)
+    {
+        // Not connected (e.g. the port couldn't be opened), so there's 
+        // nothing to close and no disconnection to report.
+        return;
+    }
+
 #ifdef _WIN32
     CloseHandle(serialPortHandle_);
 #else

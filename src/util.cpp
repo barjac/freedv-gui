@@ -78,7 +78,7 @@ bool MainApp::CanAccessSerialPort(std::string const& portName)
             return couldOpen;
         }
         
-		if((com_handle=open(portName.c_str(), O_NONBLOCK|O_RDWR))== COM_HANDLE_INVALID)
+		if((com_handle=open(portName.c_str(), O_NONBLOCK|O_RDWR|O_NOCTTY))== COM_HANDLE_INVALID)
         {
             couldOpen = false;
         }
@@ -91,20 +91,21 @@ bool MainApp::CanAccessSerialPort(std::string const& portName)
     
     if (!couldOpen)
     {
-        std::string errorMessage = "Could not open serial port " + portName + ".";
-        
-        #ifdef _WIN32
-        errorMessage += " Please ensure that no other applications are accessing the port.";
-        #elif __linux
-        errorMessage += " Please ensure that you have permission to access the port. Adding yourself to the 'dialout' group (and logging out/back in) along with reattaching your radio to your PC will typically ensure this.";
-        #else
-        errorMessage += " Please ensure that you have permission to access the port.";
-        #endif
-         
-        CallAfter([&, errorMessage]() {
+        CallAfter([&, portName]() {
+            wxString errorMessage = wxString::Format(_("Could not open serial port %s."), wxString::FromUTF8(portName.c_str()));
+            errorMessage += wxT(" ");
+            
+            #ifdef _WIN32
+            errorMessage += _("Please ensure that no other applications are accessing the port.");
+            #elif __linux
+            errorMessage += _("Please ensure that you have permission to access the port. Adding yourself to the 'dialout' group (and logging out/back in) along with reattaching your radio to your PC will typically ensure this.");
+            #else
+            errorMessage += _("Please ensure that you have permission to access the port.");
+            #endif
+
             wxMessageBox(
                 errorMessage, 
-                wxT("Error"), wxOK | wxICON_ERROR, GetTopWindow());
+                _("Error"), wxOK | wxICON_ERROR, GetTopWindow());
         });
     }
     
@@ -119,7 +120,7 @@ bool MainFrame::isReceiveOnly()
 {
     return 
         wxGetApp().appConfiguration.reportingConfiguration.freedvReporterForceReceiveOnly || 
-        g_nSoundCards <= 1;
+        g_nSoundCards.load(std::memory_order_acquire) <= 1;
 }
 
 //----------------------------------------------------------------
@@ -141,11 +142,16 @@ void MainFrame::OpenSerialPort(void)
             wxGetApp().rigFrequencyController = nullptr;
             
             wxGetApp().rigPttController->onRigError += [&](IRigController*, std::string const& err) {
-                std::string fullErrMsg = "Couldn't open serial port for PTT output: " + err; 
-                CallAfter([&]() 
+                CallAfter([&, err]() 
                 {
-                    wxMessageBox(fullErrMsg, wxT("Error"), wxOK | wxICON_ERROR, this);
+                    // TRANSLATORS: %s is the error message returned by the operating system.
+                    wxString fullErrMsg = wxString::Format(_("Couldn't open serial port for PTT output: %s"), wxString::FromUTF8(err.c_str()));
+                    wxMessageBox(fullErrMsg, _("Error"), wxOK | wxICON_ERROR, this);
                 });
+            };
+
+            wxGetApp().rigPttController->onPttChange += [&](IRigPttController*, bool state) {
+                onRigPttChange_(state);
             };
 
             wxGetApp().rigPttController->connect();
@@ -169,10 +175,11 @@ void MainFrame::OpenPTTInPort(void)
             
             wxGetApp().m_pttInSerialPort->onRigError += [&](IRigController*, std::string const& err)
             {
-                std::string fullErr = "Couldn't open PTT input port: " + err;
-                CallAfter([&]() 
+                CallAfter([&, err]() 
                 {
-                    wxMessageBox(fullErr, wxT("Error"), wxOK | wxICON_ERROR, this);
+                    // TRANSLATORS: %s is the error message returned by the operating system.
+                    wxString fullErr = wxString::Format(_("Couldn't open PTT input port: %s"), wxString::FromUTF8(err.c_str()));
+                    wxMessageBox(fullErr, _("Error"), wxOK | wxICON_ERROR, this);
                 });
             };
 
@@ -205,26 +212,6 @@ void MainFrame::ClosePTTInPort(void)
         wxGetApp().m_pttInSerialPort->disconnect();
         wxGetApp().m_pttInSerialPort = nullptr;
     }
-}
-
-void freq_shift_coh(COMP rx_fdm_fcorr[], COMP rx_fdm[], float foff, float Fs, COMP *foff_phase_rect, int nin) FREEDV_NONBLOCKING
-{
-    COMP  foff_rect;
-    float mag;
-    int   i;
-
-    foff_rect.real = cosf(2.0*M_PI*foff/Fs);
-    foff_rect.imag = sinf(2.0*M_PI*foff/Fs);
-    for(i=0; i<nin; i++) {
-	*foff_phase_rect = cmult(*foff_phase_rect, foff_rect);
-	rx_fdm_fcorr[i] = cmult(rx_fdm[i], *foff_phase_rect);
-    }
-
-    /* normalise digital oscillator as the magnitude can drift over time */
-
-    mag = cabsolute(*foff_phase_rect);
-    foff_phase_rect->real /= mag;
-    foff_phase_rect->imag /= mag;
 }
 
 // Decimates samples using an algorithm that produces nice plots of

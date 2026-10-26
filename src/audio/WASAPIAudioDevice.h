@@ -85,7 +85,11 @@ private:
     std::thread renderCaptureThread_;
     HANDLE renderCaptureEvent_;
     bool isRenderCaptureRunning_;
+    // Created on first start() and only closed in the destructor, so the
+    // processing thread never sees a handle being closed under it.
     HANDLE semaphore_;
+    HANDLE highResTimer_;
+    bool timePeriodSet_;
 
     // For mix<->int16 conversions
     int containerBits_;
@@ -93,8 +97,11 @@ private:
     bool isFloatingPoint_;
     short* tmpBuf_;
 
-    // For handling additional wakeup time after semaphore timeout
-    int extraTimeMs_;
+    // Tracks only how long the *wait itself* overshot its requested duration
+    // last cycle (100ns units), separate from processing time -- which
+    // stopRealTimeWork() measures directly each cycle against startTime_
+    // rather than inferring it from this. See stopRealTimeWork() for why.
+    int64_t waitOvershootHns_;
     std::chrono::time_point<std::chrono::steady_clock> startTime_;
 
     void renderAudio_(ComPtr<IAudioRenderClient> renderClient);
@@ -125,7 +132,7 @@ void WASAPIAudioDevice::copyFloatToShort_(T* source, int numFrames)
     {
         for (int innerIndex = 0; innerIndex < numChannels_; innerIndex++)
         {
-            tmpBuf_[index * numChannels_ + innerIndex] = source[index * numChannels_ + innerIndex] * std::numeric_limits<short>::max();
+            tmpBuf_[index * numChannels_ + innerIndex] = source[index * numChannels_ + innerIndex] * (std::numeric_limits<short>::max());
         }
     }
 }
@@ -137,7 +144,7 @@ void WASAPIAudioDevice::copyShortToFloat_(T* dest, int numFrames)
     {
         for (int innerIndex = 0; innerIndex < numChannels_; innerIndex++)
         {
-            dest[index * numChannels_ + innerIndex] = (T)tmpBuf_[index * numChannels_ + innerIndex] / std::numeric_limits<short>::max();
+            dest[index * numChannels_ + innerIndex] = (T)tmpBuf_[index * numChannels_ + innerIndex] / (std::numeric_limits<short>::max());
         }
     }
 }

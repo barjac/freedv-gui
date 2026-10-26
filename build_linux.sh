@@ -18,14 +18,34 @@ STATIC_LIBGCC=${STATIC_LIBGCC:-0}
 ENABLE_LTO=${ENABLE_LTO:-0}
 PGO_INSTRUMENT=${PGO_INSTRUMENT:-0}
 PGO_USE_PROFILE=${PGO_USE_PROFILE:-}
+USE_CCACHE=${USE_CCACHE:-0}
+WITH_COVERAGE=${WITH_COVERAGE:-0}
 
 export FREEDVGUIDIR=${PWD}
 
+if [ $USE_CCACHE == 1 ]; then
+    # Needed for ccache to cache compiles that use precompiled headers.
+    export CCACHE_SLOPPINESS=${CCACHE_SLOPPINESS:-pch_defines,time_macros}
+    CCACHE_ARGS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+else
+    CCACHE_ARGS=""
+fi
+
+# Records which lines are executed, for reporting how much of the code the
+# tests exercise (e.g. with gcovr, after running them).
+if [ $WITH_COVERAGE == 1 ]; then
+    COVERAGE_ARGS="-DCMAKE_C_FLAGS=--coverage -DCMAKE_CXX_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage -DCMAKE_SHARED_LINKER_FLAGS=--coverage"
+else
+    COVERAGE_ARGS=""
+fi
+
 # Finally, build freedv-gui
 cd $FREEDVGUIDIR
-if [ -d .git ]; then
+# Not in CI, which builds the commit it checked out (for a pull request,
+# a merge that isn't on any branch to pull).
+if [ -d .git ] && [ -z "${CI:-}" ]; then
      git pull
 fi
 mkdir  -p build_linux && cd build_linux && rm -Rf *
-cmake -DPGO_INSTRUMENT=${PGO_INSTRUMENT} -DPGO_USE_PROFILE=${PGO_USE_PROFILE} -DENABLE_LTO=${ENABLE_LTO} -DSTATIC_LIBGCC=${STATIC_LIBGCC} -DENABLE_UBSAN=${WITH_UBSAN} -DENABLE_TSAN=${WITH_TSAN} -DENABLE_RTSAN=${WITH_RTSAN} -DENABLE_ASAN=${WITH_ASAN} -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DUSE_NATIVE_AUDIO=$USE_NATIVE_AUDIO -DUNITTEST=$UT_ENABLE ..
+cmake ${CCACHE_ARGS} ${COVERAGE_ARGS} -DPGO_INSTRUMENT=${PGO_INSTRUMENT} -DPGO_USE_PROFILE=${PGO_USE_PROFILE} -DENABLE_LTO=${ENABLE_LTO} -DSTATIC_LIBGCC=${STATIC_LIBGCC} -DENABLE_UBSAN=${WITH_UBSAN} -DENABLE_TSAN=${WITH_TSAN} -DENABLE_RTSAN=${WITH_RTSAN} -DENABLE_ASAN=${WITH_ASAN} -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DUSE_NATIVE_AUDIO=$USE_NATIVE_AUDIO -DUNITTEST=$UT_ENABLE ..
 make -j$(nproc)

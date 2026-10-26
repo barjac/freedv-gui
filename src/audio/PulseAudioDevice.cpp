@@ -29,6 +29,7 @@
 #include <signal.h>
 
 #include "PulseAudioDevice.h"
+#include "PulseAudioEngine.h"
 #include "../util/timespec.h"
 
 #if defined(USE_RTKIT)
@@ -47,9 +48,9 @@ using namespace std::chrono_literals;
 thread_local bool PulseAudioDevice::MustStopWork_ = false;
 #endif // 0
  
-PulseAudioDevice::PulseAudioDevice(pa_threaded_mainloop *mainloop, pa_context* context, wxString const& devName, IAudioEngine::AudioDirection direction, int sampleRate, int numChannels)
-    : context_(context)
-    , mainloop_(mainloop)
+PulseAudioDevice::PulseAudioDevice(wxString const& devName, IAudioEngine::AudioDirection direction, int sampleRate, int numChannels)
+    : context_(nullptr)
+    , mainloop_(nullptr)
     , stream_(nullptr)
     , devName_(devName)
     , direction_(direction)
@@ -79,6 +80,16 @@ void PulseAudioDevice::start()
     sample_specification.format = PA_SAMPLE_S16LE;
     sample_specification.rate = sampleRate_;
     sample_specification.channels = numChannels_;
+
+    auto error = PulseAudioEngine::CreateConnection(&mainloop_, &context_, true);
+    if (!error.empty())
+    {
+        if (onAudioErrorFunction)
+        {
+            onAudioErrorFunction(*this, error + " (" + (const char*)devName_.ToUTF8() + ")", onAudioErrorState);
+        }
+        return;
+    }
     
     pa_threaded_mainloop_lock(mainloop_);
     stream_ = pa_stream_new(context_, description.c_str(), &sample_specification, nullptr);
@@ -89,6 +100,10 @@ void PulseAudioDevice::start()
             onAudioErrorFunction(*this, std::string("Could not create PulseAudio stream for ") + (const char*)devName_.ToUTF8(), onAudioErrorState);
         }
         pa_threaded_mainloop_unlock(mainloop_);
+
+        PulseAudioEngine::DestroyConnection(mainloop_, context_);
+        mainloop_ = nullptr;
+        context_ = nullptr;
         return;
     }
     
@@ -165,9 +180,13 @@ void PulseAudioDevice::stopImpl_()
     {
         pa_threaded_mainloop_lock(mainloop_);
 
-        // Disconnect stream and wait for response from mainloop.
-        pa_stream_disconnect(stream_);
-        pa_threaded_mainloop_wait(mainloop_);
+        // Disconnect stream and wait for response from mainloop. A stream
+        // that's already failed (e.g. because the sound server went away)
+        // has nothing left to disconnect, so there'd be no response.
+        if (PA_STREAM_IS_GOOD(pa_stream_get_state(stream_)) && pa_stream_disconnect(stream_) == 0)
+        {
+            pa_threaded_mainloop_wait(mainloop_);
+        }
 
         // Deallocate stream.
         pa_stream_unref(stream_);
@@ -177,10 +196,22 @@ void PulseAudioDevice::stopImpl_()
 
         sem_destroy(&sem_);
     }
+
+    // Only after the stream has terminated, as waiting for that needs the main loop.
+    PulseAudioEngine::DestroyConnection(mainloop_, context_);
+    mainloop_ = nullptr;
+    context_ = nullptr;
 }
 
 int64_t PulseAudioDevice::getLatencyInMicroseconds()
 {
+    // stopImpl_() destroys mainloop_ while holding objLock_.
+    std::unique_lock<std::mutex> lk(objLock_);
+    if (mainloop_ == nullptr)
+    {
+        return 0;
+    }
+
     pa_threaded_mainloop_lock(mainloop_);
     pa_usec_t latency = 0;
     if (stream_ != nullptr)
@@ -369,7 +400,7 @@ void PulseAudioDevice::stopRealTimeWork(bool fastMode)
 
     auto endTime = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime_).count() - nsec;
-    extraTimeNs_ = std::max((long)0, duration); // cap extra time to >= 0.
+    extraTimeNs_ = std::max((int64_t)0, (int64_t)duration); // cap extra time to >= 0.
 
     if (rv == -1 && errno != ETIMEDOUT)
     {
@@ -456,12 +487,44 @@ void PulseAudioDevice::StreamStateCallback_(pa_stream *p, void *userdata)
 {
     PulseAudioDevice* thisObj = static_cast<PulseAudioDevice*>(userdata);
 
-    // This method is only used for termination to ensure that it's synchronous and 
+    // This method is used for termination to ensure that it's synchronous and 
     // does not accidentally refer to already freed memory.
-    if (pa_stream_get_state(p) == PA_STREAM_TERMINATED)
+    auto state = pa_stream_get_state(p);
+    if (state == PA_STREAM_TERMINATED)
     {
         pa_threaded_mainloop_signal(thisObj->mainloop_, 0);
-    }    
+    }
+    else if (state == PA_STREAM_READY)
+    {
+        // Streams aren't connected with PA_STREAM_DONT_MOVE, so that they
+        // can be moved to another device later. That also lets the sound
+        // server put one somewhere other than where it was asked to if that
+        // isn't there (PipeWire plays to the default device, for instance).
+        // Note it in the log when that happens.
+        const char* actualName = pa_stream_get_device_name(p);
+        if (actualName != nullptr && !thisObj->devName_.IsEmpty() &&
+            thisObj->devName_ != wxString::FromUTF8(actualName))
+        {
+            log_info("Stream for %s was connected to %s instead", (const char*)thisObj->devName_.ToUTF8(), actualName);
+        }
+    }
+    else if (state == PA_STREAM_FAILED)
+    {
+        // The stream's gone without being asked to, e.g. because the sound
+        // server has. Nothing more will come of it, so say so, and don't
+        // leave anything waiting for it to terminate.
+        pa_threaded_mainloop_signal(thisObj->mainloop_, 0);
+
+        auto context = pa_stream_get_context(p);
+        std::string reason = (context != nullptr) ? pa_strerror(pa_context_errno(context)) : "unknown error";
+        log_warn("Stream for %s failed: %s", (const char*)thisObj->devName_.ToUTF8(), reason.c_str());
+        if (thisObj->onAudioErrorFunction)
+        {
+            thisObj->onAudioErrorFunction(
+                *thisObj, std::string("Lost connection to ") + (const char*)thisObj->devName_.ToUTF8() + " (" + reason + ")",
+                thisObj->onAudioErrorState);
+        }
+    }
 }
 
 void PulseAudioDevice::StreamUnderflowCallback_(pa_stream *, void *userdata)

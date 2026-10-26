@@ -23,8 +23,8 @@
 #define __TOPFRAME_H__
 
 #include "git_version.h"
+#include <wx/version.h>
 #include <wx/artprov.h>
-#include <wx/xrc/xmlres.h>
 #include <wx/intl.h>
 #include <wx/string.h>
 #include <wx/bitmap.h>
@@ -59,6 +59,7 @@
 #include <wx/combo.h>
 
 #include "gui/util/wxListViewComboPopup.h"
+#include "gui/controls/MsgListPopup.h"
 
 ///////////////////////////////////////////////////////////////////////////
 
@@ -101,7 +102,7 @@ class TopFrame : public wxFrame
         wxStaticText* m_textSNR;
         wxCheckBox* m_ckboxSNR;
         wxGauge* m_gaugeLevel;
-        wxStaticText* m_textLevel;
+        wxPanel* m_levelTargetMarker;
 
         wxButton*     m_BtnCallSignReset;
         wxTextCtrl*   m_txtCtrlCallSign;
@@ -225,6 +226,9 @@ class TopFrame : public wxFrame
                 
         virtual void OnReportFrequencySetFocus(wxFocusEvent& event) { event.Skip(); }
         virtual void OnReportFrequencyKillFocus(wxFocusEvent& event) { event.Skip(); }
+        virtual void OnReportFrequencyContextMenu(wxContextMenuEvent& event) { event.Skip(); }
+        virtual void OnReportFrequencyItemMenu(int) { }
+        virtual void OnReportFrequencyItemDelete(int) { }
 
         virtual void OnSystemColorChanged(wxSysColourChangedEvent& event) { event.Skip(); }
                 
@@ -248,7 +252,8 @@ class TopFrame : public wxFrame
         wxToggleButton* m_btnTogPTT;
         wxToggleButton* m_btnTogTune;
         wxAuiNotebook* m_auiNbookCtrl;
-        wxComboBox*   m_cboReportFrequency;
+        wxComboCtrl*  m_cboReportFrequency;
+        MsgListPopup* m_reportFrequencyList;   // m_cboReportFrequency's drop-down list
         wxStaticBox*  m_freqBox;
         wxStaticBox*  m_txLevelBox;
         wxStaticBox* micSpeakerBox;
@@ -262,16 +267,21 @@ class TopFrame : public wxFrame
 class TabFreeAuiNotebook : public wxAuiNotebook
 {
 public:
-    TabFreeAuiNotebook();
     TabFreeAuiNotebook(wxWindow *parent, wxWindowID id=wxID_ANY, const wxPoint &pos=wxDefaultPosition, const wxSize &size=wxDefaultSize, long style=wxAUI_NB_DEFAULT_STYLE);
     virtual ~TabFreeAuiNotebook() = default;
 
     bool AcceptsFocus() const;
     bool AcceptsFocusFromKeyboard() const;
     bool AcceptsFocusRecursively() const;
-    
+
+#if !wxCHECK_VERSION(3, 3, 0)
+    // wxAuiNotebook::SaveLayout()/LoadLayout() are only available in
+    // wxWidgets 3.3+. Older wxWidgets (e.g. as still packaged by some
+    // Linux distributions) falls back to this hand-rolled implementation
+    // so that tab layout persistence is still available.
     wxString SavePerspective();
     bool LoadPerspective(const wxString& layout);
+#endif // !wxCHECK_VERSION(3, 3, 0)
 };
 
 #endif //__TOPFRAME_H__

@@ -100,7 +100,9 @@ mv $(pwd)/$FREEDV_CONF_FILE.tmp $(pwd)/$FREEDV_CONF_FILE
 # Start recording
 if [ "$FREEDV_TEST" == "tx" ]; then
     if [ "$OPERATING_SYSTEM" == "Linux" ]; then
-        parecord --channels=1 --file-format=wav --rate 48000 --device "$REC_DEVICE" test.wav &
+        # Small buffer, so audio still in flight isn't lost when parecord is stopped
+        # (see test_rade_reporting.sh).
+        parecord --latency-msec=20 --channels=1 --file-format=wav --rate 48000 --device "$REC_DEVICE" test.wav &
     else
         sox --buffer 32768 -t $SOX_DRIVER "$REC_DEVICE" -c 1 -t wav -r 48000 test.wav &
     fi
@@ -108,7 +110,7 @@ if [ "$FREEDV_TEST" == "tx" ]; then
 fi
 
 # Start FreeDV in test mode
-$FREEDV_BINARY -f $(pwd)/$FREEDV_CONF_FILE -ut $FREEDV_TEST -utmode $FREEDV_MODE >tmp.log 2>&1 & #| tee tmp.log
+($FREEDV_BINARY -f $(pwd)/$FREEDV_CONF_FILE -ut $FREEDV_TEST -utmode $FREEDV_MODE 2>&1 | tee tmp.log) &
 
 FDV_PID=$!
 
@@ -122,7 +124,7 @@ FDV_PID=$!
 #pw-top -b -n 5
 wait $FDV_PID
 FREEDV_EXIT_STATUS=$?
-cat tmp.log
+#cat tmp.log
 
 # Stop recording/playback and process data
 if [ "$FREEDV_TEST" == "rx" ]; then

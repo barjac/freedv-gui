@@ -22,28 +22,29 @@ set(PROJECT_HOMEPAGE_URL "https://freedv.org")
 # Makes FreeDV overridden CMake platform available for ARM MinGW builds.
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/")
 
+# NOTE: APPLE/WIN32/UNIX aren't reliably set until after the first
+# project()/enable_language() call, so the platform-specific language
+# list can't be chosen via if(APPLE) beforehand -- when cross-compiling
+# for Windows from a macOS host, APPLE would (incorrectly) reflect the
+# host platform at that point rather than the CMAKE_SYSTEM_NAME from the
+# toolchain file. Always declare C/CXX first, then add OBJCXX afterward
+# once APPLE reflects the actual target.
+project(
+    ${PROJECT_NAME}
+    VERSION ${PROJECT_VERSION}
+    DESCRIPTION ${PROJECT_DESCRIPTION}
+    HOMEPAGE_URL ${PROJECT_HOMEPAGE_URL}
+    LANGUAGES C CXX
+)
+
 if(APPLE)
-    project(
-        ${PROJECT_NAME}
-        VERSION ${PROJECT_VERSION}
-        DESCRIPTION ${PROJECT_DESCRIPTION}
-        HOMEPAGE_URL ${PROJECT_HOMEPAGE_URL}
-        LANGUAGES C CXX OBJCXX
-    )
+    enable_language(OBJCXX)
 
     # Workaround for Xcode 15 bug preventing FreeDV binaries from starting
     # on older versions of macOS. See https://developer.apple.com/documentation/xcode-release-notes/xcode-15-release-notes#Linking.
     if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15.0.0.0)
         add_link_options("-Wl,-ld_classic")
     endif(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15.0.0.0)
-else(APPLE)
-    project(
-        ${PROJECT_NAME}
-        VERSION ${PROJECT_VERSION}
-        DESCRIPTION ${PROJECT_DESCRIPTION}
-        HOMEPAGE_URL ${PROJECT_HOMEPAGE_URL}
-        LANGUAGES C CXX
-    )
 endif(APPLE)
 
 if(NOT DEFINED LINUX)
@@ -88,7 +89,11 @@ endif(BUILD_OSX_UNIVERSAL)
 # Return the date (yyyy-mm-dd)
 string(TIMESTAMP DATE_RESULT "%Y-%m-%d" UTC)
 message(STATUS "Compilation date = XX${DATE_RESULT}XX")
-add_definitions(-DFREEDV_BUILD_DATE="${DATE_RESULT}")
+# Written to a generated source file rather than passed as a compile
+# definition: a definition would change every compile command each day,
+# forcing a full rebuild (wxWidgets included) and defeating ccache.
+# configure_file() only rewrites the file when the date changes.
+configure_file(cmake/build_date.cpp.in ${CMAKE_BINARY_DIR}/generated/build_date.cpp @ONLY)
 
 # Generate custom CTest config
 configure_file(cmake/CTestCustom.cmake ${CMAKE_BINARY_DIR})
@@ -106,6 +111,7 @@ endif(NOT CMAKE_BUILD_TYPE)
 # Find the git hash if this is a working copy.
 #
 include(cmake/CheckGit.cmake)
+include(cmake/CheckLibraryUsable.cmake)
 CheckGitSetup()
 
 # Set default build flags.
@@ -115,6 +121,12 @@ if(APPLE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
     set(CMAKE_OBJCXX_FLAGS "${CMAKE_OBJCXX_FLAGS} -g")
 endif(APPLE)
+
+# Clang otherwise embeds header timestamps in precompiled headers, which
+# makes every fresh checkout produce a different PCH and miss in ccache.
+if(CMAKE_C_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    add_compile_options("SHELL:-Xclang -fno-pch-timestamp")
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -207,6 +219,23 @@ set(SANITIZERS_ENABLED TRUE)
 else(ENABLE_UBSAN OR ENABLE_TSAN OR ENABLE_ASAN OR ENABLE_RTSAN)
 set(SANITIZERS_ENABLED FALSE)
 endif(ENABLE_UBSAN OR ENABLE_TSAN OR ENABLE_ASAN OR ENABLE_RTSAN)
+
+# Sets how a test passes. Without sanitizers, it passes when its output
+# matches the optional pass regex (or, if none is given, when it exits
+# successfully). With them, the builds are too slow for the tests' own
+# checks to mean much, so a test passes as long as no sanitizer reported
+# anything: what it exits with is ignored, though it still fails if it
+# crashes or times out. Must be called from the directory that added the test.
+function(freedv_set_test_pass_criteria testName)
+    set(passRegex "${ARGN}")
+    if(SANITIZERS_ENABLED)
+        set_tests_properties(${testName} PROPERTIES
+            PASS_REGULAR_EXPRESSION ".*"
+            FAIL_REGULAR_EXPRESSION "WARNING: ThreadSanitizer|ERROR: ThreadSanitizer|FATAL: ThreadSanitizer|ERROR: AddressSanitizer|ERROR: LeakSanitizer|ERROR: RealtimeSanitizer|UndefinedBehaviorSanitizer|runtime error:")
+    elseif(passRegex)
+        set_tests_properties(${testName} PROPERTIES PASS_REGULAR_EXPRESSION "${passRegex}")
+    endif()
+endfunction()
 
 if(SIGN_WINDOWS_BINARIES)
     if(NOT WIN32 AND NOT MINGW)
@@ -324,6 +353,8 @@ endif()
 if(BOOTSTRAP_WXWIDGETS)
     message(STATUS "Adding wxWidgets build target...")
     include(cmake/BuildWxWidgets.cmake)
+    include(cmake/ReleaseBuildOfDependency.cmake)
+    freedv_release_build_of_dependency("${wxwidgets_SOURCE_DIR}")
 else()
     if(APPLE)
         if(WX_VERSION VERSION_EQUAL ${WX_31_VERSION_MIN}
@@ -410,6 +441,15 @@ message(STATUS "Threads library flags: ${CMAKE_THREAD_LIBS_INIT}")
 # 
 include(cmake/BuildFreeDVBackend.cmake)
 
+# freedv-backend builds LibreSSL itself where there's no OpenSSL to use (or
+# when told to with USE_STATIC_LIBRESSL).
+include(FetchContent)
+FetchContent_GetProperties(LibreSSL)
+if(libressl_POPULATED)
+    include(cmake/ReleaseBuildOfDependency.cmake)
+    freedv_release_build_of_dependency("${libressl_SOURCE_DIR}")
+endif()
+
 if (NOT USE_NATIVE_AUDIO AND LINUX)
     message(WARNING "Use of PortAudio on Linux has been deprecated and may be explicitly disallowed in a future release. It is highly recommended that you use FreeDV's built-in PulseAudio support instead as this generally gives better results, especially on distributions that now use pipewire for audio.")
 endif(NOT USE_NATIVE_AUDIO AND LINUX)
@@ -428,27 +468,29 @@ endif(USE_NATIVE_AUDIO)
 #
 if(NOT USE_STATIC_PORTAUDIO AND NOT NATIVE_AUDIO_AVAILABLE)
     message(STATUS "Looking for portaudio...")
-    find_package(portaudio-2.0 REQUIRED)
+    find_package(portaudio-2.0)
     if(PORTAUDIO_FOUND)
         message(STATUS "  portaudio library: ${PORTAUDIO_LIBRARIES}")
         message(STATUS "  portaudio headers: ${PORTAUDIO_INCLUDE_DIRS}")
         if(pkgcfg_lib_PORTAUDIO_portaudio)
-        list(APPEND FREEDV_LINK_LIBS ${pkgcfg_lib_PORTAUDIO_portaudio})
+        set(PORTAUDIO_LINK_LIBS ${pkgcfg_lib_PORTAUDIO_portaudio})
         else(pkgcfg_lib_PORTAUDIO_portaudio)
-        list(APPEND FREEDV_LINK_LIBS ${PORTAUDIO_LIBRARIES})
+        set(PORTAUDIO_LINK_LIBS ${PORTAUDIO_LIBRARIES})
         endif(pkgcfg_lib_PORTAUDIO_portaudio)
+        CheckLibraryUsable(PORTAUDIO_USABLE
+            SYMBOL Pa_Initialize HEADER portaudio.h
+            LIBRARIES ${PORTAUDIO_LINK_LIBS} INCLUDE_DIRS ${PORTAUDIO_INCLUDE_DIRS})
+    endif(PORTAUDIO_FOUND)
+    if(PORTAUDIO_USABLE)
+        list(APPEND FREEDV_LINK_LIBS ${PORTAUDIO_LINK_LIBS})
         include_directories(${PORTAUDIO_INCLUDE_DIRS})
-    else()
-        message(FATAL_ERROR "portaudio library not found.
-On Linux systems try installing:
-    portaudio-devel  (RPM based systems)
-    portaudio19-dev (DEB based systems)
-On Windows it's easiest to use the cmake option: USE_STATIC_PORTAUDIO"
-        )
-    endif()
-    if(NOT ${PORTAUDIO_VERSION} EQUAL 19 AND NOT MINGW)
-        message(WARNING "Portaudio versions other than 19 are known to have issues. You have been warned!")
-    endif()
+        if(NOT ${PORTAUDIO_VERSION} EQUAL 19 AND NOT MINGW)
+            message(WARNING "Portaudio versions other than 19 are known to have issues. You have been warned!")
+        endif()
+    else(PORTAUDIO_USABLE)
+        message(STATUS "Will attempt static build of portaudio.")
+        include(cmake/Buildportaudio-2.0.cmake)
+    endif(PORTAUDIO_USABLE)
 elseif(USE_NATIVE_AUDIO AND LINUX)
     message(STATUS "Finding PulseAudio...")
     find_package(PulseAudio REQUIRED)
@@ -484,6 +526,11 @@ find_library(HAMLIB_LIBRARY hamlib PATH_SUFFIXES hamlib)
 message(STATUS "  Hamlib library: ${HAMLIB_LIBRARY}")
 message(STATUS "  Hamlib headers: ${HAMLIB_INCLUDE_DIR}")
 if(HAMLIB_LIBRARY AND HAMLIB_INCLUDE_DIR)
+    CheckLibraryUsable(HAMLIB_USABLE
+        SYMBOL rig_init HEADER hamlib/rig.h
+        LIBRARIES ${HAMLIB_LIBRARY} INCLUDE_DIRS ${HAMLIB_INCLUDE_DIR})
+endif(HAMLIB_LIBRARY AND HAMLIB_INCLUDE_DIR)
+if(HAMLIB_USABLE)
     message(STATUS "Hamlib library found.")
     include_directories(${HAMLIB_INCLUDE_DIR})
     list(APPEND FREEDV_LINK_LIBS ${HAMLIB_LIBRARY})
@@ -521,10 +568,21 @@ if(HAMLIB_LIBRARY AND HAMLIB_INCLUDE_DIR)
             endif (NOT HAMLIB_VERSION STRLESS "Hamlib 4.5")
         endif (NOT HAMLIB_COMPILE_RESULT OR NOT HAMLIB_RUN_RESULT OR NOT HAMLIB_VERSION)
     endif (NOT CMAKE_CROSSCOMPILING)
-else(HAMLIB_LIBRARY AND HAMLIB_INCLUDE_DIR)
+
+    # Hamlib 4.7+ moves rig_state to hamlib/rig_state.h. Look for this file.
+    find_file(
+        HAMLIB_RIG_STATE_H
+	"rig_state.h"
+	PATHS "${HAMLIB_INCLUDE_DIR}/hamlib"
+	NO_DEFAULT_PATH)
+    if (NOT HAMLIB_RIG_STATE_H STREQUAL "HAMLIB_RIG_STATE_H-NOTFOUND")
+        message(STATUS "Hamlib: rig state is in rig_state.h, not rig.h.")
+        add_definitions(-DHAMLIB_USE_SEPARATE_RIG_STATE_H)
+    endif (NOT HAMLIB_RIG_STATE_H STREQUAL "HAMLIB_RIG_STATE_H-NOTFOUND")
+else(HAMLIB_USABLE)
     message(STATUS "Using own Hamlib build")
     include(cmake/BuildHamlib.cmake)
-endif(HAMLIB_LIBRARY AND HAMLIB_INCLUDE_DIR)
+endif(HAMLIB_USABLE)
 
 # r8brain-free-src (header-only, bundled in src/3rdparty/r8brain)
 
@@ -537,8 +595,13 @@ if(NOT USE_STATIC_SNDFILE)
     find_path(LIBSNDFILE_INCLUDE_DIR sndfile.h)
     message(STATUS "  sndfile library: ${LIBSNDFILE}")
     message(STATUS "  sndfile headers: ${LIBSNDFILE_INCLUDE_DIR}")
-
     if(LIBSNDFILE AND LIBSNDFILE_INCLUDE_DIR)
+        CheckLibraryUsable(LIBSNDFILE_USABLE
+            SYMBOL sf_open HEADER sndfile.h
+            LIBRARIES ${LIBSNDFILE} INCLUDE_DIRS ${LIBSNDFILE_INCLUDE_DIR})
+    endif(LIBSNDFILE AND LIBSNDFILE_INCLUDE_DIR)
+
+    if(LIBSNDFILE_USABLE)
         # Some Linux distros don't include MP3 support for libsamplefile. 
         # Check for this, and if we don't have the needed config, disable 
         # MP3 support in the app.
@@ -562,10 +625,10 @@ if(NOT USE_STATIC_SNDFILE)
         endif (NOT CMAKE_CROSSCOMPILING)
 
         list(APPEND FREEDV_LINK_LIBS ${LIBSNDFILE})
-    else(LIBSNDFILE AND LIBSNDFILE_INCLUDE_DIR)
+    else(LIBSNDFILE_USABLE)
         message(STATUS "Will attempt static build of sndfile.")
         include(cmake/BuildSndfile.cmake)
-    endif(LIBSNDFILE AND LIBSNDFILE_INCLUDE_DIR)
+    endif(LIBSNDFILE_USABLE)
 else(NOT USE_STATIC_SNDFILE)
     message(STATUS "Will attempt static build of sndfile.")
     include(cmake/BuildSndfile.cmake)
@@ -600,6 +663,11 @@ option(UNITTEST "Build unittest binaries." OFF)
 if(UNITTEST)
 enable_testing()
 endif(UNITTEST)
+
+#
+# Translations (needs to come before src so the app bundle can include them)
+#
+add_subdirectory(po)
 
 #
 # Freedv
@@ -742,43 +810,149 @@ elseif(UNIX AND NOT APPLE)
 
 endif(WIN32)
 
+if(UNITTEST AND WIN32)
+    # The unit tests can't be run where they're cross-compiled, so provide a
+    # way of gathering them and the DLLs they need for running elsewhere:
+    # "make collect_unit_tests" fills the unit_tests folder of the build.
+    get_property(_unit_test_targets GLOBAL PROPERTY FREEDV_UNIT_TEST_TARGETS)
+    set(_unit_test_files)
+    foreach(_target ${_unit_test_targets})
+        list(APPEND _unit_test_files "$<TARGET_FILE:${_target}>")
+    endforeach()
+
+    set(FREEDV_UNIT_TEST_LIST_FILE ${CMAKE_BINARY_DIR}/unit_tests.txt)
+    set(FREEDV_UNIT_TEST_OUTPUT_DIR ${CMAKE_BINARY_DIR}/unit_tests)
+    file(GENERATE OUTPUT ${FREEDV_UNIT_TEST_LIST_FILE} CONTENT "$<JOIN:${_unit_test_files},\n>\n")
+
+    configure_file(cmake/CollectUnitTests.cmake.in cmake/CollectUnitTests.cmake @ONLY)
+    add_custom_target(collect_unit_tests
+        COMMAND ${CMAKE_COMMAND} -P ${CMAKE_BINARY_DIR}/cmake/CollectUnitTests.cmake
+        DEPENDS unit_tests)
+endif(UNITTEST AND WIN32)
+
 if(UNITTEST)
 # The below tests are currently Linux/macOS-only. A PowerShell version of fullduplex_* 
 # for Windows is implemented in tests/TestFreeDVFullDuplex.ps1.
 macro(DefineAudioTest utName)
     add_test(NAME fullduplex_${utName} 
              COMMAND sh -c "${CMAKE_CURRENT_SOURCE_DIR}/test/test_zeros.sh txrx ${utName}") 
-    if(NOT SANITIZERS_ENABLED)
-    set_tests_properties(fullduplex_${utName} PROPERTIES PASS_REGULAR_EXPRESSION "Got 1 sync changes")
-    endif(NOT SANITIZERS_ENABLED)
+    freedv_set_test_pass_criteria(fullduplex_${utName} "Got 1 sync changes")
 endmacro()
 
 DefineAudioTest(RADEV1)
+
+# The -txfile/-txoutfile and -rxfile/-rxoutfile unit-test options.
+add_test(NAME ut_file_recording
+         COMMAND sh -c "${CMAKE_CURRENT_SOURCE_DIR}/test/test_ut_recording.sh")
+freedv_set_test_pass_criteria(ut_file_recording "PASS: file input and output")
 
 if(NOT ENABLE_RTSAN)
 # Note: loading/saving feature files is currently not RT-safe
 add_test(NAME rade_loss
          COMMAND sh -c "${CMAKE_CURRENT_SOURCE_DIR}/test/test_rade_loss.sh")
-
-# For sanitizers, we're just seeing if there are any errors from the sanitizer.
-if(NOT SANITIZERS_ENABLED)
-set_tests_properties(rade_loss PROPERTIES PASS_REGULAR_EXPRESSION "PASS")
-endif(NOT SANITIZERS_ENABLED)
+freedv_set_test_pass_criteria(rade_loss "PASS")
 endif(NOT ENABLE_RTSAN)
 
 add_test(NAME rade_reporting_clean COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test/test_rade_reporting.sh)
-if(NOT SANITIZERS_ENABLED)
-set_tests_properties(rade_reporting_clean PROPERTIES PASS_REGULAR_EXPRESSION "Reporting callsign ZZ0ZZZ @ SNR")
-endif(NOT SANITIZERS_ENABLED)
+freedv_set_test_pass_criteria(rade_reporting_clean "Reporting callsign ZZ0ZZZ @ SNR")
 
 add_test(NAME rade_reporting_awgn COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test/test_rade_reporting.sh awgn)
-if(NOT SANITIZERS_ENABLED)
-set_tests_properties(rade_reporting_awgn PROPERTIES PASS_REGULAR_EXPRESSION "Reporting callsign ZZ0ZZZ @ SNR")
-endif(NOT SANITIZERS_ENABLED)
+freedv_set_test_pass_criteria(rade_reporting_awgn "Reporting callsign ZZ0ZZZ @ SNR")
 
 add_test(NAME rade_reporting_mpp COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test/test_rade_reporting.sh mpp)
-if(NOT SANITIZERS_ENABLED)
-set_tests_properties(rade_reporting_mpp PROPERTIES PASS_REGULAR_EXPRESSION "Reporting callsign ZZ0ZZZ @ SNR")
-endif(NOT SANITIZERS_ENABLED)
+freedv_set_test_pass_criteria(rade_reporting_mpp "Reporting callsign ZZ0ZZZ @ SNR")
+
+# GUI tests: Python scripts that drive FreeDV's user interface (see test/gui).
+# These are labeled so that they can be run (ctest -L gui) or skipped
+# (ctest -LE gui) as a group. On macOS, they need four loopback audio devices
+# (see test/gui/freedvtest/audio.py), and skip (exit code 77) what can't be
+# done there. They take over the screen, keyboard focus and mouse pointer
+# while they run. In sanitizer builds, as with the other tests, only a
+# sanitizer's report in FreeDV's output fails them (the scripts show that
+# output whenever there's one in it).
+if(LINUX OR APPLE)
+foreach(scenario first_run second_run receive_only odd_starting_points cancel auto_select radio_control hamlib_start reporting import import_more)
+    add_test(NAME gui_setup_wizard_${scenario}
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test/gui/test_setup_wizard.py ${scenario})
+    set_tests_properties(gui_setup_wizard_${scenario} PROPERTIES LABELS gui SKIP_RETURN_CODE 77)
+    freedv_set_test_pass_criteria(gui_setup_wizard_${scenario})
+endforeach(scenario)
+
+# These also need a window manager to be running and, other than live_view
+# (which is skipped if the public FreeDV Reporter server can't be reached), the
+# Python packages listed in test/gui/freedvtest/reporter.py.
+foreach(scenario live_view stations sorting sorted_updates updates_while_sorted display_options damaged_layout sort_every_column band_filter column_filters numeric_filters idle_filter columns status_message status_message_flags text_filters saved_filters selection qsy qsy_with_radio row_actions turn_off off_at_start new_callsign window connection_burst frequency_in_khz)
+    add_test(NAME gui_reporter_${scenario}
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test/gui/test_reporter.py ${scenario})
+    set_tests_properties(gui_reporter_${scenario} PROPERTIES LABELS gui SKIP_RETURN_CODE 77)
+    freedv_set_test_pass_criteria(gui_reporter_${scenario})
+endforeach(scenario)
+
+foreach(scenario buttons audio audio_tests radio ptt_test rig_control frequency_list frequency_list_from_main_window reporting voice_keyer display modem_and_debugging ptt_key_names auto_start while_running)
+    add_test(NAME gui_settings_${scenario}
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test/gui/test_settings.py ${scenario})
+    set_tests_properties(gui_settings_${scenario} PROPERTIES LABELS gui SKIP_RETURN_CODE 77)
+    freedv_set_test_pass_criteria(gui_settings_${scenario})
+endforeach(scenario)
+
+# These measure what FreeDV plays and records, so they're kept from running
+# alongside anything else.
+foreach(scenario transmit ptt_key ptt_key_elsewhere tx_level receive analog play_file play_file_loop voice_keyer voice_keyer_reply voice_keyer_files recording recording_options unwritable_files monitor_volume mouse_controls tune_level_per_band frequency_units time_out_timer voice_keyer_time_out ptt_key_time_out menus help_and_restore default_config config_migration_failure exit_menu reporting_without_callsign band_names appearance_change tab_layout heard_list window_geometry receive_reports test_tone exit_while_tuning old_settings bad_command_line)
+    add_test(NAME gui_main_window_${scenario}
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test/gui/test_main_window.py ${scenario})
+    set_tests_properties(gui_main_window_${scenario} PROPERTIES LABELS gui RUN_SERIAL TRUE SKIP_RETURN_CODE 77)
+    freedv_set_test_pass_criteria(gui_main_window_${scenario})
+endforeach(scenario)
+
+# The reporter scenario needs what the FreeDV Reporter tests do.
+foreach(scenario manual frequency_in_khz callsign_list reporter selected_khz no_udp)
+    add_test(NAME gui_log_qso_${scenario}
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test/gui/test_log_qso.py ${scenario})
+    set_tests_properties(gui_log_qso_${scenario} PROPERTIES LABELS gui SKIP_RETURN_CODE 77)
+    freedv_set_test_pass_criteria(gui_log_qso_${scenario})
+endforeach(scenario)
+
+foreach(scenario controls out_of_range volume equalizer equalizer_receive_only noise_suppression default_config one_sound_card)
+    add_test(NAME gui_filter_${scenario}
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test/gui/test_filter.py ${scenario})
+    set_tests_properties(gui_filter_${scenario} PROPERTIES LABELS gui RUN_SERIAL TRUE SKIP_RETURN_CODE 77)
+    freedv_set_test_pass_criteria(gui_filter_${scenario})
+endforeach(scenario)
+
+# These need a C compiler when run, for what stands in for a serial port's
+# control lines (see test/gui/freedvtest/serial.py).
+foreach(scenario rts polarity ptt_input errors settings_ptt_test)
+    add_test(NAME gui_serial_ptt_${scenario}
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test/gui/test_serial_ptt.py ${scenario})
+    set_tests_properties(gui_serial_ptt_${scenario} PROPERTIES LABELS gui SKIP_RETURN_CODE 77)
+    freedv_set_test_pass_criteria(gui_serial_ptt_${scenario})
+endforeach(scenario)
+
+# device_removed and sound_server_restarted run a sound server of their own
+# (PipeWire), and are skipped if they can't.
+foreach(scenario missing_device low_sample_rate no_devices partly_configured receive_only device_moved receive_only_device_moved
+         device_removed sound_server_restarted sound_server_gone_while_starting
+         sound_card_gone_while_starting sound_server_gone_while_opening_streams)
+    add_test(NAME gui_audio_errors_${scenario}
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test/gui/test_audio_errors.py ${scenario})
+    set_tests_properties(gui_audio_errors_${scenario} PROPERTIES LABELS gui RUN_SERIAL TRUE SKIP_RETURN_CODE 77)
+    freedv_set_test_pass_criteria(gui_audio_errors_${scenario})
+endforeach(scenario)
+
+foreach(scenario tuning tuned_away drawing waterfall_colours spectrum_averaging sized_plots translated_layout)
+    add_test(NAME gui_plots_${scenario}
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test/gui/test_plots.py ${scenario})
+    set_tests_properties(gui_plots_${scenario} PROPERTIES LABELS gui RUN_SERIAL TRUE SKIP_RETURN_CODE 77)
+    freedv_set_test_pass_criteria(gui_plots_${scenario})
+endforeach(scenario)
+
+# These use Hamlib's rigctld as the radio, and are skipped without it.
+foreach(scenario control frequency_only mode_display analog_sideband editing_frequency unreachable serial_ptt missing_port lost)
+    add_test(NAME gui_rig_control_${scenario}
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test/gui/test_rig_control.py ${scenario})
+    set_tests_properties(gui_rig_control_${scenario} PROPERTIES LABELS gui SKIP_RETURN_CODE 77)
+    freedv_set_test_pass_criteria(gui_rig_control_${scenario})
+endforeach(scenario)
+endif(LINUX OR APPLE)
 
 endif(UNITTEST)

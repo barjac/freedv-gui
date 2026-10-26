@@ -22,6 +22,7 @@
 #ifndef __MONITOR_VOLUME_ADJ__
 #define __MONITOR_VOLUME_ADJ__
 
+#include <atomic>
 #include <wx/popupwin.h>
 #include <wx/slider.h>
 
@@ -33,15 +34,19 @@
 class MonitorVolumeAdjPopup : public wxPopupTransientWindow
 {
     public:        
-        MonitorVolumeAdjPopup( wxWindow* parent, ConfigurationDataElement<float>& configVal );
+        MonitorVolumeAdjPopup( wxWindow* parent, ConfigurationDataElement<float>& configVal, std::atomic<float>& liveVal );
         ~MonitorVolumeAdjPopup();
         
     protected:
         void OnSliderAdjusted(wxCommandEvent& event);
+
+        // Called once the user has clicked elsewhere.
+        void OnDismiss() override;
         
     private:
         wxSlider* volumeSlider_;
         ConfigurationDataElement<float>& configVal_;
+        std::atomic<float>& liveVal_; // copy read by the audio thread
 };
 
 #endif // __MONITOR_VOLUME_ADJ__

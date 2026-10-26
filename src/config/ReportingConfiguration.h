@@ -93,6 +93,10 @@ public:
     virtual void load(wxConfigBase* config) override;
     virtual void save(wxConfigBase* config) override;
 
+    // Where a frequency (in the list's units, MHz or kHz) belongs in a
+    // list kept in ascending order: the index of the first entry above it.
+    static size_t SortedFrequencyIndex(std::vector<wxString> const& list, double freq);
+
 private:
     std::vector<wxString> convertFrequencyListFromStorage_(std::vector<wxString> const& list);
     std::vector<wxString> convertFrequencyListToStorage_(std::vector<wxString> const& list);

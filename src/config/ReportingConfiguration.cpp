@@ -24,6 +24,7 @@
 #include <wx/stdpaths.h>
 #include <wx/filename.h>
 #include <inttypes.h>
+#include <algorithm>
 #include <cmath>
 
 #include "../defines.h"
@@ -32,8 +33,8 @@
 
 ReportingConfiguration::ReportingConfiguration()
     : reportingEnabled("/Reporting/Enable", false)
-    , reportingCallsign("/Reporting/Callsign", _(""))
-    , reportingGridSquare("/Reporting/GridSquare", _(""))
+    , reportingCallsign("/Reporting/Callsign", wxT(""))
+    , reportingGridSquare("/Reporting/GridSquare", wxT(""))
         
     , reportingFrequency("/Reporting/Frequency", 0)
         
@@ -51,7 +52,7 @@ ReportingConfiguration::ReportingConfiguration()
     , freedvReporterForceReceiveOnly("/Reporting/FreeDV/ForceReceiveOnly", false)
     , freedvReporterBandFilterTracksFreqBand("/Reporting/FreeDV/BandFilterTracking/TracksFreqBand", true)
     , freedvReporterBandFilterTracksExactFreq("/Reporting/FreeDV/BandFilterTracking/TracksExactFreq", false)
-    , freedvReporterStatusText("/Reporting/FreeDV/StatusText", _(""))
+    , freedvReporterStatusText("/Reporting/FreeDV/StatusText", wxT(""))
     , freedvReporterRecentStatusTexts("/Reporting/FreeDV/RecentStatusTexts", {})
     
     , freedvReporterColumnOrder("/Reporting/FreeDV/ColumnOrder", { }) /* empty means default ordering */
@@ -63,11 +64,11 @@ ReportingConfiguration::ReportingConfiguration()
     , freedvReporterColumnFilterValues("/Reporting/FreeDV/ColumnFilterValues", {})
 
     , udpReportingEnabled("/Reporting/UDP/Enable", false)
-    , udpReportingHostname("/Reporting/UDP/Hostname", _("127.0.0.1"))
+    , udpReportingHostname("/Reporting/UDP/Hostname", wxT("127.0.0.1"))
     , udpReportingPort("/Reporting/UDP/Port", 2237)
 
     , udpBroadcastEnabled("/Reporting/UDPBroadcast/Enable", false)
-    , udpBroadcastAddress("/Reporting/UDPBroadcast/Address", _("224.0.0.1"))
+    , udpBroadcastAddress("/Reporting/UDPBroadcast/Address", wxT("224.0.0.1"))
     , udpBroadcastPort("/Reporting/UDPBroadcast/Port", 7177)
 
     , useUTCForReporting("/CallsignList/UseUTCTime", false)
@@ -77,47 +78,47 @@ ReportingConfiguration::ReportingConfiguration()
     // directly; current builds only use it as a one-time migration source
     // for reportingFrequencyListCentred below (see migrateFrequencyListToCentred_).
     , reportingFrequencyList("/Reporting/FrequencyList", {
-        _("1.8700"),
-        _("3.6250"),
-        _("3.6430"),
-        _("3.6930"),
-        _("3.6970"),
-        _("3.8030"),
-        _("5.4035"),
-        _("5.3685"),
-        _("7.1770"),
-        _("7.1970"),
-        _("14.2360"),
-        _("14.2400"),
-        _("18.1180"),
-        _("21.3130"),
-        _("24.9330"),
-        _("28.3300"),
-        _("28.7200"),
-        _("10489.6400"),
+        wxT("1.8700"),
+        wxT("3.6250"),
+        wxT("3.6430"),
+        wxT("3.6930"),
+        wxT("3.6970"),
+        wxT("3.8030"),
+        wxT("5.4035"),
+        wxT("5.3685"),
+        wxT("7.1770"),
+        wxT("7.1970"),
+        wxT("14.2360"),
+        wxT("14.2400"),
+        wxT("18.1180"),
+        wxT("21.3130"),
+        wxT("24.9330"),
+        wxT("28.3300"),
+        wxT("28.7200"),
+        wxT("10489.6400"),
     })
     // Values are centre frequencies (dial frequency +/-1.5kHz depending on
     // sideband), matching the convention used for reportingFrequency. This
     // is the list actually shown/edited in the GUI.
     , reportingFrequencyListCentred("/Reporting/FrequencyListCentred", {
-        _("1.8685"),
-        _("3.6235"),
-        _("3.6415"),
-        _("3.6915"),
-        _("3.6955"),
-        _("3.8015"),
-        _("5.4050"),
-        _("5.3700"),
-        _("7.1755"),
-        _("7.1955"),
-        _("14.2375"),
-        _("14.2415"),
-        _("18.1195"),
-        _("21.3145"),
-        _("24.9345"),
-        _("28.3315"),
-        _("28.7215"),
-        _("10489.6415"),
+        wxT("1.8685"),
+        wxT("3.6235"),
+        wxT("3.6415"),
+        wxT("3.6915"),
+        wxT("3.6955"),
+        wxT("3.8015"),
+        wxT("5.4050"),
+        wxT("5.3700"),
+        wxT("7.1755"),
+        wxT("7.1955"),
+        wxT("14.2375"),
+        wxT("14.2415"),
+        wxT("18.1195"),
+        wxT("21.3145"),
+        wxT("24.9345"),
+        wxT("28.3315"),
+        wxT("28.7215"),
+        wxT("10489.6415"),
     })
     , freedvReporterTxRowBackgroundColor("/Reporting/FreeDV/TxRowBackgroundColor", "#fc4500")
     , freedvReporterTxRowForegroundColor("/Reporting/FreeDV/TxRowForegroundColor", "#000000")
@@ -128,7 +129,7 @@ ReportingConfiguration::ReportingConfiguration()
         
     , reportingFrequencyAsKhz("/Reporting/FrequencyAsKHz", false)
     , reportingDirectionAsCardinal("/Reporting/DirectionAsCardinal", false)
-    , csvLogFilePath("/Reporting/CSV/LogFilePath", _(""))
+    , csvLogFilePath("/Reporting/CSV/LogFilePath", wxT(""))
 {
     // Special handling for the frequency lists to properly handle locales.
     // Both the legacy and centred lists use the same on-disk convention, so
@@ -145,7 +146,7 @@ ReportingConfiguration::ReportingConfiguration()
 
 std::vector<wxString> ReportingConfiguration::convertFrequencyListFromStorage_(std::vector<wxString> const& list)
 {
-    std::vector<wxString> newList;
+    std::vector<uint64_t> freqs;
     for (auto& val : list)
     {
         // Frequencies are unfortunately saved in US format (legacy behavior). We need
@@ -168,8 +169,15 @@ std::vector<wxString> ReportingConfiguration::convertFrequencyListFromStorage_(s
         long long mhz = 0;
         wholeNumber.ToLongLong(&mhz);
         fraction.ToLongLong(&hz);
-        uint64_t freq = mhz * 1000000 + hz;
+        freqs.push_back(mhz * 1000000 + hz);
+    }
 
+    // Shown in ascending order, whatever order an older config has them in.
+    std::sort(freqs.begin(), freqs.end());
+
+    std::vector<wxString> newList;
+    for (auto freq : freqs)
+    {
         if (reportingFrequencyAsKhz)
         {
             double khzFloat = freq / 1000.0;
@@ -192,16 +200,13 @@ std::vector<wxString> ReportingConfiguration::convertFrequencyListToStorage_(std
     {
         // Frequencies are unfortunately saved in US format (legacy behavior). We need
         // to manually parse and convert to Hz, then output MHz values in US format.
-        double mhz = 0.0;
-        wxNumberFormatter::FromString(val, &mhz);
+        double displayedFreq = 0.0;
+        wxNumberFormatter::FromString(val, &displayedFreq);
 
-        if (reportingFrequencyAsKhz)
-        {
-            // Frequencies are in kHz, so divide one more time to get MHz.
-            mhz /= 1000.0;
-        }
-
-        uint64_t hz = mhz * 1000000;
+        // Round to the nearest Hz; most decimal values can't be exactly represented
+        // in floating point, so truncating can leave us 1 Hz below what was entered.
+        double hzFloat = displayedFreq * (reportingFrequencyAsKhz ? 1000.0 : 1000000.0);
+        uint64_t hz = hzFloat > 0 ? std::llround(hzFloat) : 0;
         uint64_t mhzInt = hz / 1000000;
         hz = hz % 1000000;
 
@@ -450,4 +455,19 @@ void ReportingConfiguration::save(wxConfigBase* config)
     // Special save handling for reporting below.
     wxString tempFreqStr = wxString::Format(wxT("%" PRIu64), reportingFrequency.getWithoutProcessing());
     config->Write(reportingFrequency.getElementName(), tempFreqStr);
+}
+
+size_t ReportingConfiguration::SortedFrequencyIndex(std::vector<wxString> const& list, double freq)
+{
+    size_t index = 0;
+    for (; index < list.size(); index++)
+    {
+        double existing = 0;
+        wxNumberFormatter::FromString(list[index], &existing);
+        if (existing > freq)
+        {
+            break;
+        }
+    }
+    return index;
 }

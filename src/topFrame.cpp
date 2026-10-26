@@ -29,6 +29,12 @@
 #include <wx/numformatter.h>
 
 #include "topFrame.h"
+#include "defines.h"
+
+#if !wxCHECK_VERSION(3, 3, 0)
+#include <set>
+#endif // !wxCHECK_VERSION(3, 3, 0)
+
 #include "gui/util/NameOverrideAccessible.h"
 #include "gui/util/LabelOverrideAccessible.h"
 #include "util/logging/ulog.h"
@@ -65,9 +71,11 @@ extern int g_txLevel;
 #define MIC_SPKR_LEVEL_FORMAT_STR "%s%s"
 #define DECIBEL_STR "dB"
 
+#if !wxCHECK_VERSION(3, 3, 0)
 // THIS IS VERY MUCH A HACK! wxTabFrame is not in the public interface and should
-// not be here, even named as something else. Unfortunately this is needed to get 
-// the tab state loaded and saved. Here's hoping this interface remains stable.
+// not be here, even named as something else. Unfortunately this is needed to get
+// the tab state loaded and saved on wxWidgets versions older than 3.3, which lack
+// wxAuiNotebook::SaveLayout()/LoadLayout(). Here's hoping this interface remains stable.
 //
 // (Last retrieved from wxWidgets 3.0.5.1 on August 8, 2023.)
 class wxTabFrameOurs : public wxWindow
@@ -194,20 +202,16 @@ public:
     wxAuiTabCtrl* m_tabs;
     int m_tabCtrlHeight;
 };
- 
-TabFreeAuiNotebook::TabFreeAuiNotebook() : wxAuiNotebook() 
-{ 
-    // XXX - FreeDV only supports English but makes a best effort to at least use regional formatting
-    // for e.g. numbers. Thus, we only need to override layout direction.
-    SetLayoutDirection(wxLayout_LeftToRight);
-}
+#endif // !wxCHECK_VERSION(3, 3, 0)
+
 TabFreeAuiNotebook::TabFreeAuiNotebook(wxWindow *parent, wxWindowID id, const wxPoint &pos, const wxSize &size, long style)
         : wxAuiNotebook(parent, id, pos, size, style) { }
-    
+
 bool TabFreeAuiNotebook::AcceptsFocus() const { return false; }
 bool TabFreeAuiNotebook::AcceptsFocusFromKeyboard() const { return false; }
 bool TabFreeAuiNotebook::AcceptsFocusRecursively() const { return false; }
 
+#if !wxCHECK_VERSION(3, 3, 0)
 // SavePerspective and LoadPerspective below credit https://forums.kirix.com/viewtopicdafe.html?f=15&t=542
 // with minor modifications to make it compile on modern wxWidgets.
 wxString TabFreeAuiNotebook::SavePerspective() {
@@ -223,7 +227,7 @@ wxString TabFreeAuiNotebook::SavePerspective() {
              continue;
 
          wxTabFrameOurs* tabframe = (wxTabFrameOurs*)pane.window;
-  
+
        if (!tabs.empty()) tabs += wxT("|");
        tabs += pane.name;
        tabs += wxT("=");
@@ -399,15 +403,14 @@ bool TabFreeAuiNotebook::LoadPerspective(const wxString& layout) {
 
     return ok;
 }
+#endif // !wxCHECK_VERSION(3, 3, 0)
 
 //=========================================================================
 // Code that lays out the main application window
 //=========================================================================
 TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const wxPoint& pos, const wxSize& size, long style) : wxFrame(parent, id, title, pos, size, style)
 {
-    // XXX - FreeDV only supports English but makes a best effort to at least use regional formatting
-    // for e.g. numbers. Thus, we only need to override layout direction.
-    SetLayoutDirection(wxLayout_LeftToRight);
+    WXWIDGETS_SET_LAYOUT_DIRECTION;
     
 #if wxUSE_ACCESSIBILITY
     // Initialize accessibility logic
@@ -417,6 +420,7 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
         // Ensures NVDA reads back version numbers as "x point y ..." rather
         // than as a date.
         wxRegEx rePoint("\\.");
+        // TRANSLATORS: Read aloud by screen readers in place of the "." in the version number.
         rePoint.ReplaceAll(&labelStr, _(" point "));
         
         return labelStr;
@@ -558,18 +562,42 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     //------------------------------
     wxStaticBoxSizer* levelSizer;
     wxStaticBox* levelBox = new wxStaticBox(m_panel, wxID_ANY, _("Level"), wxDefaultPosition, wxSize(100,-1));
-    levelSizer = new wxStaticBoxSizer(levelBox, wxHORIZONTAL);
+    levelSizer = new wxStaticBoxSizer(levelBox, wxVERTICAL);
 
-    m_gaugeLevel = new wxGauge(levelBox, wxID_ANY, 100, wxDefaultPosition, wxSize(100,15), wxGA_SMOOTH);
-    m_gaugeLevel->SetToolTip(_("Peak of From Radio in Rx, or peak of From Mic in Tx mode.  If Red you should reduce your levels"));
-    levelSizer->Add(m_gaugeLevel, 1, wxALIGN_CENTER_VERTICAL|static_cast<int>(wxALL), 10);
-    
-    m_textLevel = new wxStaticText(levelBox, wxID_ANY, wxT(""), wxDefaultPosition, wxSize(35,-1), wxALIGN_CENTRE);
-    m_textLevel->SetForegroundColour(wxColour(255,0,0));
-    levelSizer->Add(m_textLevel, 0, wxALIGN_CENTER_VERTICAL, 1);
+    // Thin static strip marking the acceptable range (LEVEL_METER_TARGET_LOW_PCT
+    // to LEVEL_METER_TARGET_HIGH_PCT) just above the gauge -- a plain painted
+    // panel rather than a custom meter widget. Always visible (never
+    // Show()/Hide()'d) -- GTK doesn't finish allocating a widget's real
+    // on-screen position until it's been shown once, and reading its
+    // geometry immediately after a first Show()+Layout() during TX
+    // confirmed it was still stuck at (0,0) regardless (2026-08-24
+    // diagnostic). 
+    m_levelTargetMarker = new wxPanel(levelBox, wxID_ANY, wxDefaultPosition, wxSize(135,3));
+    m_levelTargetMarker->SetToolTip(_("Acceptable level range (amber = too low, green = target, red = too high)"));
+    m_levelTargetMarker->Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+        wxPaintDC dc(m_levelTargetMarker);
+        wxSize sz = m_levelTargetMarker->GetClientSize();
+        dc.SetBackground(wxBrush(m_levelTargetMarker->GetParent()->GetBackgroundColour()));
+        dc.Clear();
 
-    leftSizer->Add(levelSizer, 0, static_cast<int>(wxALL)|static_cast<int>(wxEXPAND), 2);
+        int loX = sz.GetWidth() * LEVEL_METER_TARGET_LOW_PCT / 100;
+        int hiX = sz.GetWidth() * LEVEL_METER_TARGET_HIGH_PCT / 100;
+        dc.SetPen(*wxTRANSPARENT_PEN);
+        dc.SetBrush(wxBrush(wxColour(255, 165, 0)));
+        dc.DrawRectangle(0, 0, loX, sz.GetHeight());
+        dc.SetBrush(wxBrush(wxColour(0, 200, 0)));
+        dc.DrawRectangle(loX, 0, hiX - loX, sz.GetHeight());
+        dc.SetBrush(wxBrush(*wxRED));
+        dc.DrawRectangle(hiX, 0, sz.GetWidth() - hiX, sz.GetHeight());
+    });
+    levelSizer->Add(m_levelTargetMarker, 0, static_cast<int>(wxALIGN_CENTER_HORIZONTAL));
+
+    m_gaugeLevel = new wxGauge(levelBox, wxID_ANY, LEVEL_GAUGE_MIN_DB, wxDefaultPosition, wxSize(135,15), wxGA_SMOOTH); // log scale, -30 dB to 0 dB
+    m_gaugeLevel->SetToolTip(_("RX: Peak level of radio's audio output, TX: Peak level of microphone audio as recorded by FreeDV (before AGC/level settings)."));
+    levelSizer->Add(m_gaugeLevel, 1, static_cast<int>(wxALIGN_CENTER_HORIZONTAL)|static_cast<int>(wxALL), 10);
     
+    leftSizer->Add(levelSizer ,0, static_cast<int>(wxALL)|static_cast<int>(wxEXPAND), 2);
+
     //------------------------------
     // Sync  Indicator box
     //------------------------------
@@ -577,11 +605,11 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     wxStaticBox* syncBox = new wxStaticBox(m_panel, wxID_ANY, _("Sync"), wxDefaultPosition, wxSize(100,-1));
     sbSizer3_33 = new wxStaticBoxSizer(syncBox, wxVERTICAL);
 
-    m_textSync = new wxStaticText(syncBox, wxID_ANY, wxT("Modem"), wxDefaultPosition, wxDefaultSize, wxALIGN_CENTRE);
+    m_textSync = new wxStaticText(syncBox, wxID_ANY, _("Modem"), wxDefaultPosition, wxDefaultSize, wxALIGN_CENTRE);
     sbSizer3_33->Add(m_textSync, 0, wxALIGN_CENTER_HORIZONTAL, 1);
     m_textSync->Disable();
 
-    m_textCurrentDecodeMode = new wxStaticText(syncBox, wxID_ANY, wxT("Mode: unk"), wxDefaultPosition, wxDefaultSize, wxALIGN_CENTRE);
+    m_textCurrentDecodeMode = new wxStaticText(syncBox, wxID_ANY, wxString::Format(_("Mode: %s"), _("unk")), wxDefaultPosition, wxDefaultSize, wxALIGN_CENTRE);
     sbSizer3_33->Add(m_textCurrentDecodeMode, 0, wxALIGN_CENTER_HORIZONTAL, 1);
     m_textCurrentDecodeMode->Disable();
     
@@ -638,22 +666,22 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     m_BtnBerReset = new wxButton(statsBox, wxID_ANY, _("&Reset"), wxDefaultPosition, wxDefaultSize, 0);
     sbSizer_ber->Add(m_BtnBerReset, 0, wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL|static_cast<int>(wxALL), 5);
 
-    m_textBits = new wxStaticText(statsBox, wxID_ANY, wxT("Bits: 0"), wxDefaultPosition, wxDefaultSize, wxALIGN_LEFT);
+    m_textBits = new wxStaticText(statsBox, wxID_ANY, wxString::Format(_("Bits: %d"), 0), wxDefaultPosition, wxDefaultSize, wxALIGN_LEFT);
     sbSizer_ber->Add(m_textBits, 0, static_cast<int>(wxALL) | wxALIGN_LEFT, 1);
-    m_textErrors = new wxStaticText(statsBox, wxID_ANY, wxT("Errs: 0"), wxDefaultPosition, wxDefaultSize, wxALIGN_LEFT);
+    m_textErrors = new wxStaticText(statsBox, wxID_ANY, wxString::Format(_("Errs: %d"), 0), wxDefaultPosition, wxDefaultSize, wxALIGN_LEFT);
     sbSizer_ber->Add(m_textErrors, 0, static_cast<int>(wxALL) | wxALIGN_LEFT, 1);
-    m_textBER = new wxStaticText(statsBox, wxID_ANY, wxT("BER: 0.0"), wxDefaultPosition, wxDefaultSize, wxALIGN_LEFT);
+    m_textBER = new wxStaticText(statsBox, wxID_ANY, wxString::Format(_("BER: %4.3f"), 0.0), wxDefaultPosition, wxDefaultSize, wxALIGN_LEFT);
     sbSizer_ber->Add(m_textBER, 0, static_cast<int>(wxALL) | wxALIGN_LEFT, 1);
-    m_textResyncs = new wxStaticText(statsBox, wxID_ANY, wxT("Resyncs: 0"), wxDefaultPosition, wxDefaultSize, wxALIGN_LEFT);
+    m_textResyncs = new wxStaticText(statsBox, wxID_ANY, wxString::Format(_("Resyncs: %d"), 0), wxDefaultPosition, wxDefaultSize, wxALIGN_LEFT);
     sbSizer_ber->Add(m_textResyncs, 0, static_cast<int>(wxALL) | wxALIGN_LEFT, 1);
-    m_textClockOffset = new wxStaticText(statsBox, wxID_ANY, wxT("ClkOff: 0"), wxDefaultPosition, wxDefaultSize, wxALIGN_LEFT);
+    m_textClockOffset = new wxStaticText(statsBox, wxID_ANY, wxString::Format(_("ClkOff: %+-d"), 0), wxDefaultPosition, wxDefaultSize, wxALIGN_LEFT);
     m_textClockOffset->SetMinSize(wxSize(125,-1));
     sbSizer_ber->Add(m_textClockOffset, 0, static_cast<int>(wxALL) | wxALIGN_LEFT, 1);
-    m_textFreqOffset = new wxStaticText(statsBox, wxID_ANY, wxT("FreqOff: 0"), wxDefaultPosition, wxDefaultSize, wxALIGN_LEFT);
+    m_textFreqOffset = new wxStaticText(statsBox, wxID_ANY, wxString::Format(_("FrqOff: %3.1f"), 0.0), wxDefaultPosition, wxDefaultSize, wxALIGN_LEFT);
     sbSizer_ber->Add(m_textFreqOffset, 0, static_cast<int>(wxALL) | wxALIGN_LEFT, 1);
-    m_textSyncMetric = new wxStaticText(statsBox, wxID_ANY, wxT("Sync: 0"), wxDefaultPosition, wxDefaultSize, wxALIGN_LEFT);
+    m_textSyncMetric = new wxStaticText(statsBox, wxID_ANY, wxString::Format(_("Sync: %3.2f"), 0.0), wxDefaultPosition, wxDefaultSize, wxALIGN_LEFT);
     sbSizer_ber->Add(m_textSyncMetric, 0, static_cast<int>(wxALL) | wxALIGN_LEFT, 1);
-    m_textCodec2Var = new wxStaticText(statsBox, wxID_ANY, wxT("Var: 0"), wxDefaultPosition, wxDefaultSize, wxALIGN_LEFT);
+    m_textCodec2Var = new wxStaticText(statsBox, wxID_ANY, wxString::Format(_("Var: %4.1f"), 0.0), wxDefaultPosition, wxDefaultSize, wxALIGN_LEFT);
     sbSizer_ber->Add(m_textCodec2Var, 0, static_cast<int>(wxALL) | wxALIGN_LEFT, 1);
 
     leftSizer->Add(sbSizer_ber,0, static_cast<int>(wxALL)|static_cast<int>(wxEXPAND)|wxFIXED_MINSIZE, 2);
@@ -693,7 +721,8 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
 
     wxBoxSizer* modeStatusSizer;
     modeStatusSizer = new wxBoxSizer(wxVERTICAL);
-    m_txtModeStatus = new wxStaticText(m_panel, wxID_ANY, wxT("unk"), wxDefaultPosition, wxDefaultSize, wxALIGN_LEFT);
+    // TRANSLATORS: "unk" = unknown.
+    m_txtModeStatus = new wxStaticText(m_panel, wxID_ANY, _("unk"), wxDefaultPosition, wxDefaultSize, wxALIGN_LEFT);
     m_txtModeStatus->Enable(false); // enabled only if Hamlib is turned on
     m_txtModeStatus->SetMinSize(wxSize(80,-1));
     modeStatusSizer->Add(m_txtModeStatus, 0, static_cast<int>(wxALL)|static_cast<int>(wxEXPAND), 1);
@@ -714,10 +743,10 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     m_cboLastReportedCallsigns->SetSizeHints(wxSize(400,-1));
     m_cboLastReportedCallsigns->SetPopupMaxHeight(150);
     
-    m_lastReportedCallsignListView->InsertColumn(0, wxT("Callsign"), wxLIST_FORMAT_LEFT, 100);
-    m_lastReportedCallsignListView->InsertColumn(1, wxT("Frequency"), wxLIST_FORMAT_RIGHT, 75);
-    m_lastReportedCallsignListView->InsertColumn(2, wxT("Date/Time"), wxLIST_FORMAT_LEFT, 175);
-    m_lastReportedCallsignListView->InsertColumn(3, wxT("SNR"), wxLIST_FORMAT_RIGHT, 50);
+    m_lastReportedCallsignListView->InsertColumn(0, _("Callsign"), wxLIST_FORMAT_LEFT, 100);
+    m_lastReportedCallsignListView->InsertColumn(1, _("Frequency"), wxLIST_FORMAT_RIGHT, 75);
+    m_lastReportedCallsignListView->InsertColumn(2, _("Date/Time"), wxLIST_FORMAT_LEFT, 175);
+    m_lastReportedCallsignListView->InsertColumn(3, _("SNR"), wxLIST_FORMAT_RIGHT, 50);
 
     bSizer15->Add(m_txtCtrlCallSign, 1, static_cast<int>(wxALL)|static_cast<int>(wxEXPAND), 5);
     bSizer15->Add(m_cboLastReportedCallsigns, 1, static_cast<int>(wxALL)|static_cast<int>(wxEXPAND), 5);
@@ -738,10 +767,10 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     wxBoxSizer* txLevelSizer = new wxStaticBoxSizer(m_txLevelBox, wxVERTICAL);
     
     wxBoxSizer* txBtnSizer = new wxBoxSizer(wxHORIZONTAL);
-    m_btnTxLevelMM = new wxButton(m_txLevelBox, wxID_ANY, _("<<"), wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
-    m_btnTxLevelM  = new wxButton(m_txLevelBox, wxID_ANY, _("<"),  wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
-    m_btnTxLevelP  = new wxButton(m_txLevelBox, wxID_ANY, _(">"),  wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
-    m_btnTxLevelPP = new wxButton(m_txLevelBox, wxID_ANY, _(">>"), wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
+    m_btnTxLevelMM = new wxButton(m_txLevelBox, wxID_ANY, wxT("<<"), wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
+    m_btnTxLevelM  = new wxButton(m_txLevelBox, wxID_ANY, wxT("<"),  wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
+    m_btnTxLevelP  = new wxButton(m_txLevelBox, wxID_ANY, wxT(">"),  wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
+    m_btnTxLevelPP = new wxButton(m_txLevelBox, wxID_ANY, wxT(">>"), wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
     m_btnTxLevelMM->SetToolTip(_("Decrease output by 1.0dB"));
     m_btnTxLevelM ->SetToolTip(_("Decrease output by 0.2dB"));
     m_btnTxLevelP ->SetToolTip(_("Increase output by 0.2dB"));
@@ -795,14 +824,27 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     //wxStaticText* reportFrequencyUnits = new wxStaticText(m_freqBox, wxID_ANY, wxT(" MHz"), wxDefaultPosition, wxDefaultSize, wxALIGN_LEFT);
     wxBoxSizer* txtReportFreqSizer = new wxBoxSizer(wxVERTICAL);
     
-    m_cboReportFrequency = new wxComboBox(m_freqBox, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0, NULL, wxCB_DROPDOWN | wxTE_PROCESS_ENTER);
+    // A wxComboCtrl with our own list (rather than a native wxComboBox), so
+    // that a frequency can be deleted from the open list: with Del on the
+    // highlighted one, or from its right-click menu. The list keeps the
+    // configured (ascending) order, and only an item actually clicked
+    // changes the frequency -- not one the pointer just passed over.
+    m_cboReportFrequency = new wxComboCtrl(m_freqBox, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxTE_PROCESS_ENTER);
+    MsgListPopup::Options freqListOptions;
+    freqListOptions.sorted = false;
+    freqListOptions.openAbove = false;
+    freqListOptions.hoverPicks = false;
+    m_reportFrequencyList = new MsgListPopup([this](int item) { OnReportFrequencyItemMenu(item); }, freqListOptions);
+    m_cboReportFrequency->SetPopupControl(m_reportFrequencyList);
+    m_reportFrequencyList->SetDeleteKeyCallback([this](int item) { OnReportFrequencyItemDelete(item); });
+    m_cboReportFrequency->SetPopupMaxHeight(300);
     m_cboReportFrequency->SetMinSize(wxSize(150,-1));
     txtReportFreqSizer->Add(m_cboReportFrequency, 1, static_cast<int>(wxALL), 5);
     
     reportFrequencySizer->Add(txtReportFreqSizer, 1, static_cast<int>(wxEXPAND), 1);
     //reportFrequencySizer->Add(reportFrequencyUnits, 0, wxALIGN_CENTER_VERTICAL, 1);
     
-    rightSizer->Add(reportFrequencySizer, 0, static_cast<int>(wxALL), 2);
+    rightSizer->Add(reportFrequencySizer, 0, static_cast<int>(wxALL) | static_cast<int>(wxEXPAND), 2);
     
     /* new --- */
 
@@ -862,6 +904,53 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     // End of layout
     //=====================================================
     
+    //-------------------
+    // Window names, used by GUI test scripts to find controls (see test/gui).
+    //-------------------
+    SetName("main");
+    m_gaugeSNR->SetName("main.gaugeSNR");
+    m_textSNR->SetName("main.textSNR");
+    m_ckboxSNR->SetName("main.ckboxSNR");
+    m_gaugeLevel->SetName("main.gaugeLevel");
+    m_textSync->SetName("main.textSync");
+    m_textCurrentDecodeMode->SetName("main.textCurrentDecodeMode");
+    m_btnCenterRx->SetName("main.btnCenterRx");
+    m_audioRecord->SetName("main.btnRecord");
+    m_logQSO->SetName("main.btnLogQSO");
+    m_reporterHidden->SetName("main.btnReporterHidden");
+    m_BtnBerReset->SetName("main.btnBerReset");
+    m_textBits->SetName("main.textBits");
+    m_textErrors->SetName("main.textErrors");
+    m_textBER->SetName("main.textBER");
+    m_textResyncs->SetName("main.textResyncs");
+    m_textClockOffset->SetName("main.textClockOffset");
+    m_textFreqOffset->SetName("main.textFreqOffset");
+    m_textSyncMetric->SetName("main.textSyncMetric");
+    m_textCodec2Var->SetName("main.textCodec2Var");
+    m_auiNbookCtrl->SetName("main.notebook");
+    m_txtModeStatus->SetName("main.textModeStatus");
+    m_BtnCallSignReset->SetName("main.btnCallSignReset");
+    m_txtCtrlCallSign->SetName("main.textCallSign");
+    m_cboLastReportedCallsigns->SetName("main.cboLastReportedCallsigns");
+    m_lastReportedCallsignListView->SetName("main.listLastReportedCallsigns");
+    m_btnTxLevelMM->SetName("main.btnTxLevelDecrBig");
+    m_btnTxLevelM->SetName("main.btnTxLevelDecr");
+    m_btnTxLevelP->SetName("main.btnTxLevelIncr");
+    m_btnTxLevelPP->SetName("main.btnTxLevelIncrBig");
+    m_txtTxLevelNum->SetName("main.textTxLevel");
+    m_sliderMicSpkrLevel->SetName("main.sliderMicSpkrLevel");
+    m_txtMicSpkrLevelNum->SetName("main.textMicSpkrLevel");
+    m_cboReportFrequency->SetName("main.cboReportFrequency");
+    m_reportFrequencyList->SetName("main.lbReportFrequencies");
+    m_togBtnOnOff->SetName("main.btnOnOff");
+    m_togBtnAnalog->SetName("main.btnAnalog");
+    m_btnTogTune->SetName("main.btnTune");
+    m_togBtnVoiceKeyer->SetName("main.btnVoiceKeyer");
+    m_btnTogPTT->SetName("main.btnPTT");
+    m_txLevelBox->SetName("main.boxTxLevel");
+    micSpeakerBox->SetName("main.boxMicSpkrLevel");
+    m_freqBox->SetName("main.boxReportFrequency");
+
     //-------------------
     // Tab ordering for accessibility
     //-------------------
@@ -951,6 +1040,20 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     m_btnTxLevelPP->Connect(wxEVT_MOUSEWHEEL, wxMouseEventHandler(TopFrame::OnTxLevelMouseWheel), NULL, this);
     m_btnTogTune->Connect(wxEVT_MOUSEWHEEL, wxMouseEventHandler(TopFrame::OnTxLevelMouseWheel), NULL, this);
 
+    // Right-click menu on the frequency box (adding it to the list), in
+    // place of the text entry's own. GTK opens the entry's menu on
+    // button-press, so take the press and show ours on release.
+    for (wxWindow* window : { static_cast<wxWindow*>(m_cboReportFrequency),
+                              static_cast<wxWindow*>(m_cboReportFrequency->GetTextCtrl()) })
+    {
+#if defined(__WXGTK__)
+        window->Bind(wxEVT_RIGHT_DOWN, [](wxMouseEvent&) { });
+        window->Bind(wxEVT_RIGHT_UP, [this](wxMouseEvent&) { wxContextMenuEvent ctx; OnReportFrequencyContextMenu(ctx); });
+#else
+        window->Bind(wxEVT_CONTEXT_MENU, [this](wxContextMenuEvent& ctx) { OnReportFrequencyContextMenu(ctx); });
+#endif
+    }
+
 #if wxCHECK_VERSION(3, 3, 0) && defined(__WXGTK__)
     // wxGTK 3.3+ fires wxEVT_CONTEXT_MENU on button-press for these widget types,
     // causing GTK to dismiss PopupMenu on button release; use RIGHT_UP instead.
@@ -984,7 +1087,9 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
 
     m_cboReportFrequency->Connect(wxEVT_TEXT_ENTER, wxCommandEventHandler(TopFrame::OnChangeReportFrequency), NULL, this);
     m_cboReportFrequency->Connect(wxEVT_TEXT, wxCommandEventHandler(TopFrame::OnChangeReportFrequencyVerify), NULL, this);
-    m_cboReportFrequency->Connect(wxEVT_COMBOBOX, wxCommandEventHandler(TopFrame::OnChangeReportFrequency), NULL, this);
+    // A frequency picked from the list applies at once, as wxEVT_COMBOBOX
+    // did for the native combo (typing waits for Enter or leaving the box).
+    m_cboReportFrequency->Connect(wxEVT_COMBOBOX_CLOSEUP, wxCommandEventHandler(TopFrame::OnChangeReportFrequency), NULL, this);
     m_cboReportFrequency->Connect(wxEVT_SET_FOCUS, wxFocusEventHandler(TopFrame::OnReportFrequencySetFocus), NULL, this);
     m_cboReportFrequency->Connect(wxEVT_KILL_FOCUS, wxFocusEventHandler(TopFrame::OnReportFrequencyKillFocus), NULL, this);
     
@@ -1070,7 +1175,7 @@ TopFrame::~TopFrame()
     
     m_cboReportFrequency->Disconnect(wxEVT_TEXT_ENTER, wxCommandEventHandler(TopFrame::OnChangeReportFrequency), NULL, this);
     m_cboReportFrequency->Disconnect(wxEVT_TEXT, wxCommandEventHandler(TopFrame::OnChangeReportFrequencyVerify), NULL, this);
-    m_cboReportFrequency->Disconnect(wxEVT_COMBOBOX, wxCommandEventHandler(TopFrame::OnChangeReportFrequency), NULL, this);
+    m_cboReportFrequency->Disconnect(wxEVT_COMBOBOX_CLOSEUP, wxCommandEventHandler(TopFrame::OnChangeReportFrequency), NULL, this);
     
     m_cboReportFrequency->Disconnect(wxEVT_SET_FOCUS, wxFocusEventHandler(TopFrame::OnReportFrequencySetFocus), NULL, this);
     m_cboReportFrequency->Disconnect(wxEVT_KILL_FOCUS, wxFocusEventHandler(TopFrame::OnReportFrequencyKillFocus), NULL, this);
@@ -1102,13 +1207,13 @@ void TopFrame::setVoiceKeyerButtonLabel_(wxString filename)
         isTruncated = true;
         filename = filename.Mid(0, filename.size() - 1);
         
-        wxString tmpString = filename + _("...");
+        wxString tmpString = filename + wxT("...");
         m_togBtnVoiceKeyer->GetTextExtent(tmpString, &filenameWidth, &tmp);
     }
     
     if (filename.size() > 0)
     {
-        m_togBtnVoiceKeyer->SetLabel(vkLabel + _("\n") + filename + (isTruncated ? _("...") : _("")));
+        m_togBtnVoiceKeyer->SetLabel(vkLabel + wxT("\n") + filename + (isTruncated ? wxT("...") : wxT("")));
     }
     else
     {

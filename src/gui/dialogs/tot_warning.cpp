@@ -20,6 +20,8 @@
 //==========================================================================
 
 #include <wx/wx.h>
+
+#include "defines.h"
 #include "tot_warning.h"
 
 TotWarningDialog::TotWarningDialog(wxWindow* parent, int initialRemainingMs,
@@ -29,7 +31,7 @@ TotWarningDialog::TotWarningDialog(wxWindow* parent, int initialRemainingMs,
                wxDEFAULT_DIALOG_STYLE | wxSTAY_ON_TOP)
     , m_onExtend_(std::move(onExtend))
 {
-    SetLayoutDirection(wxLayout_LeftToRight);
+    WXWIDGETS_SET_LAYOUT_DIRECTION;
 
     wxPanel* panel = new wxPanel(this);
     wxBoxSizer* topSizer = new wxBoxSizer(wxVERTICAL);
@@ -67,6 +69,11 @@ TotWarningDialog::TotWarningDialog(wxWindow* parent, int initialRemainingMs,
 
     updateRemainingTime(initialRemainingMs);
 
+    // Window names, used by GUI test scripts to find controls (see test/gui).
+    SetName("totWarning");
+    m_countdownText_->SetName("totWarning.countdownText");
+    m_extendBtn_->SetName("totWarning.btnExtend");
+
     m_extendBtn_->Connect(wxEVT_COMMAND_BUTTON_CLICKED,
         wxCommandEventHandler(TotWarningDialog::OnExtend), nullptr, this);
 }
@@ -81,8 +88,7 @@ void TotWarningDialog::updateRemainingTime(int remainingMs)
 {
     int sec = (remainingMs + 999) / 1000;
     if (sec < 0) sec = 0;
-    m_countdownText_->SetLabel(wxString::Format(_("%d second%s remaining"),
-        sec, sec == 1 ? wxT("") : wxT("s")));
+    m_countdownText_->SetLabel(wxString::Format(wxPLURAL("%d second remaining", "%d seconds remaining", sec), sec));
     Layout();
 }
 
