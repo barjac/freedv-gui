@@ -15,6 +15,7 @@
 
 #include "git_version.h"
 #include "build_date.h"
+#include <wx/tooltip.h>
 #include "gui/dialogs/dlg_filter.h"
 #include "gui/dialogs/dlg_options.h"
 #include "gui/dialogs/dlg_setup_wizard.h"
@@ -2204,7 +2205,10 @@ void MainFrame::updateFreqBoxTooltip_()
         dialFreqString = wxNumberFormatter::ToString(dialFreq / 1000.0 / 1000.0, 4) + _("MHz");
     }
 
-    m_cboReportFrequency->SetToolTip(wxString::Format(_("%s SSB dial"), dialFreqString));
+    // A new wxToolTip each time: wxComboCtrl only passes its tooltip on to
+    // the text box and button inside it when the tooltip object is set, so
+    // changing the text of the existing one would leave theirs out of date.
+    m_cboReportFrequency->SetToolTip(new wxToolTip(wxString::Format(_("%s SSB dial"), dialFreqString)));
 }
 
 // The frequency typed or shown in the box as the predefined list shows it
