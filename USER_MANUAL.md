@@ -971,6 +971,8 @@ LDPC | Low Density Parity Check Codes - a family of powerful FEC codes
     * Disable Log QSO button if logging is disabled. (PR #1589)
     * Keep a typed FreeDV Reporter status message when the saved list closes. (PR #1590)
     * Stop the radio recording budget at zero instead of wrapping it. (PR #1592)
+    * Windows: Fix issue preventing audio devices that don't support raw mode from starting. (PR #1594)
+    * PlotScalar: draw the trace when the plot is wider than its sample count. (PR #1597) - thanks @barjac!
 2. Build system:
     * Windows versions are now built with llvm-mingw 20260908 (PR #1489)
     * Ccache support extended to third party dependencies. (PR #1498, #1505))
@@ -1016,6 +1018,7 @@ LDPC | Low Density Parity Check Codes - a family of powerful FEC codes
     * Fix waterfall/spectrum filling solid colour during half-duplex TX. (PR #1462) - thanks @barjac!
     * Windows/macOS: Zero audio on startup. (PR #1463)
     * Fix issue causing TX thread to use more CPU time than expected with no audio available. (PR #1465)
+    * AppImage: stop forcing GDK_BACKEND=x11. (PR #1593)
 2. Enhancements:
     * Add UDP broadcast of received callsigns. (PR #1367)
     * Add Time-Out Timer (TOT) capability to FreeDV. (PR #1366, #1398, #1405) - thanks @barjac!
