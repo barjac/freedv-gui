@@ -496,19 +496,18 @@ void PlotScalar::draw(wxGraphicsContext* ctx, bool repaintDataOnly)
 
         x = index_to_px * i;
 
-        // put inside plot window
-
-        if (i)
+        // put inside plot window. The first sample too: when the plot has
+        // more pixels than samples, the pixels before the second sample would
+        // otherwise keep INT_MAX/INT_MIN, a point far outside the plot that
+        // stopped the whole trace being drawn on macOS.
+        for (int x2 = x; x2 <= std::ceil(index_to_px * (i + 1)) && x2 < plotWidth; x2++)
         {
-            for (int x2 = x; x2 <= std::ceil(index_to_px * (i + 1)) && x2 < plotWidth; x2++)
-            {
-                auto item = &lineMap_[x2];
-                item->y1 = std::min(item->y1, y);
+            auto item = &lineMap_[x2];
+            item->y1 = std::min(item->y1, y);
 
-                if (!halfPlot_)
-                {
-                    item->y2 = std::max(item->y2, y);
-                }
+            if (!halfPlot_)
+            {
+                item->y2 = std::max(item->y2, y);
             }
         }
     }
