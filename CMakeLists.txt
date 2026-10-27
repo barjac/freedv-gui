@@ -961,4 +961,18 @@ foreach(scenario control frequency_only mode_display analog_sideband editing_fre
 endforeach(scenario)
 endif(LINUX OR APPLE)
 
+# Loaded into FreeDV to make PulseAudio report a given latency (see
+# test/gui/freedvtest/pulse.py). It's FreeDV that the sanitizers are there to
+# check, so this isn't built with them.
+if(LINUX)
+    add_library(freedvtest_pulse_shim MODULE test/gui/freedvtest/pulse_shim.c)
+    set_target_properties(freedvtest_pulse_shim PROPERTIES
+        PREFIX ""
+        OUTPUT_NAME pulse_shim
+        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test/gui)
+    target_compile_options(freedvtest_pulse_shim PRIVATE -fno-sanitize=all)
+    target_link_options(freedvtest_pulse_shim PRIVATE -fno-sanitize=all)
+    target_link_libraries(freedvtest_pulse_shim PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+endif(LINUX)
+
 endif(UNITTEST)

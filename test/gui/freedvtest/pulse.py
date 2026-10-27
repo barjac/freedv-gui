@@ -1,7 +1,8 @@
 """Makes PulseAudio (or PipeWire's stand-in for it) report a given latency
 for FreeDV's record streams, as some PipeWire versions do (#1601). Linux only;
-FreeDV is run with a small library (pulse_shim.c, built here with the system's
-C compiler) in front of libpulse.
+FreeDV is run with a small library (pulse_shim.c, built along with FreeDV's
+tests) in front of libpulse. $FREEDVTEST_PULSE_SHIM says where that is; it's
+otherwise the one in the build folder that the script was run from.
 
     with RecordLatency(2055085278) as latency:
         with freedvtest.start(settings=..., env=latency.env) as app:
@@ -14,13 +15,18 @@ or a build using PortAudio), nothing changes and reported() stays False.
 
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 
 
 class PulseShimError(Exception):
     pass
+
+
+def default_shim():
+    """Returns the shim to load into FreeDV: $FREEDVTEST_PULSE_SHIM, or the
+    one in the build folder that the script was run from."""
+    return os.environ.get("FREEDVTEST_PULSE_SHIM") or os.path.abspath(os.path.join("test", "gui", "pulse_shim.so"))
 
 
 class RecordLatency:
@@ -36,21 +42,10 @@ class RecordLatency:
     def __enter__(self):
         if not sys.platform.startswith("linux"):
             return self
+        shim = default_shim()
+        if not os.path.exists(shim):
+            raise PulseShimError("%s isn't there; it's built with FreeDV's tests (-DUNITTEST=1)" % shim)
         self._directory = tempfile.mkdtemp(prefix="freedvtest-pulse-")
-        try:
-            compiler = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
-            if compiler is None:
-                raise PulseShimError("A C compiler is needed to change PulseAudio's latency")
-            shim = os.path.join(self._directory, "pulse_shim.so")
-            source = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pulse_shim.c")
-            result = subprocess.run([compiler, "-shared", "-fPIC", "-O1", "-o", shim, source, "-ldl", "-lpthread"],
-                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            if result.returncode != 0:
-                raise PulseShimError("Could not build pulse_shim.c:\n" + result.stdout.decode(errors="replace"))
-        except BaseException:
-            shutil.rmtree(self._directory, ignore_errors=True)
-            raise
-
         self._log = os.path.join(self._directory, "reported.log")
         self.env = {"LD_PRELOAD": shim, "FREEDVTEST_PULSE_RECORD_LATENCY_US": str(self._microseconds),
                     "FREEDVTEST_PULSE_SHIM_LOG": self._log}
