@@ -1,8 +1,7 @@
 """Makes PulseAudio (or PipeWire's stand-in for it) report a given latency
 for FreeDV's record streams, as some PipeWire versions do (#1601). Linux only;
 FreeDV is run with a small library (pulse_shim.c, built along with FreeDV's
-tests) in front of libpulse. $FREEDVTEST_PULSE_SHIM says where that is; it's
-otherwise the one in the build folder that the script was run from.
+tests; see freedvtest.shim_path()) in front of libpulse.
 
     with RecordLatency(2055085278) as latency:
         with freedvtest.start(settings=..., env=latency.env) as app:
@@ -18,15 +17,11 @@ import shutil
 import sys
 import tempfile
 
+from . import shim_path
+
 
 class PulseShimError(Exception):
     pass
-
-
-def default_shim():
-    """Returns the shim to load into FreeDV: $FREEDVTEST_PULSE_SHIM, or the
-    one in the build folder that the script was run from."""
-    return os.environ.get("FREEDVTEST_PULSE_SHIM") or os.path.abspath(os.path.join("test", "gui", "pulse_shim.so"))
 
 
 class RecordLatency:
@@ -42,7 +37,7 @@ class RecordLatency:
     def __enter__(self):
         if not sys.platform.startswith("linux"):
             return self
-        shim = default_shim()
+        shim = shim_path("pulse_shim")
         if not os.path.exists(shim):
             raise PulseShimError("%s isn't there; it's built with FreeDV's tests (-DUNITTEST=1)" % shim)
         self._directory = tempfile.mkdtemp(prefix="freedvtest-pulse-")

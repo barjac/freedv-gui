@@ -961,18 +961,26 @@ foreach(scenario control frequency_only mode_display analog_sideband editing_fre
 endforeach(scenario)
 endif(LINUX OR APPLE)
 
-# Loaded into FreeDV to make PulseAudio report a given latency (see
-# test/gui/freedvtest/pulse.py). It's FreeDV that the sanitizers are there to
-# check, so this isn't built with them.
-if(LINUX)
-    add_library(freedvtest_pulse_shim MODULE test/gui/freedvtest/pulse_shim.c)
-    set_target_properties(freedvtest_pulse_shim PROPERTIES
+# Small libraries the GUI tests load into FreeDV (see test/gui/freedvtest),
+# put in test/gui. It's FreeDV that the sanitizers are there to check, so these
+# aren't built with them.
+function(freedv_add_test_shim name)
+    add_library(freedvtest_${name} SHARED test/gui/freedvtest/${name}.c)
+    set_target_properties(freedvtest_${name} PROPERTIES
         PREFIX ""
-        OUTPUT_NAME pulse_shim
-        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test/gui)
-    target_compile_options(freedvtest_pulse_shim PRIVATE -fno-sanitize=all)
-    target_link_options(freedvtest_pulse_shim PRIVATE -fno-sanitize=all)
-    target_link_libraries(freedvtest_pulse_shim PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+        SUFFIX ".so"
+        OUTPUT_NAME ${name}
+        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/test/gui)
+    target_compile_options(freedvtest_${name} PRIVATE -fno-sanitize=all)
+    target_link_options(freedvtest_${name} PRIVATE -fno-sanitize=all)
+    target_link_libraries(freedvtest_${name} PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+endfunction()
+
+if(LINUX OR APPLE)
+    freedv_add_test_shim(serial_shim)
+endif(LINUX OR APPLE)
+if(LINUX)
+    freedv_add_test_shim(pulse_shim)
 endif(LINUX)
 
 endif(UNITTEST)
