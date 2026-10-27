@@ -2651,6 +2651,9 @@ void MainFrame::performFreeDVOn_()
     endingTx.store(false, std::memory_order_release);
     g_voice_keyer_tx.store(false, std::memory_order_release);
     g_tx.store(false, std::memory_order_release);
+
+    // Nothing from a previous session should keep RX muted.
+    g_rxMutedUntilNs.store(0, std::memory_order_release);
     
     m_timeSinceSyncLoss = 0;
     syncState_ = false;
@@ -2821,11 +2824,17 @@ void MainFrame::performFreeDVOn_()
     #endif // defined(WIN32)
                 
                 // Set frequency/mode to the one pre-selected by the user before start.
+                // If the user doesn't want frequencies saved and restored, the radio
+                // keeps its current frequency (and FreeDV picks it up from the radio).
+                bool saveRestoreFrequency = wxGetApp().appConfiguration.rigControlConfiguration.hamlibSaveRestoreFrequency;
                 if (wxGetApp().rigFrequencyController && 
                     (wxGetApp().appConfiguration.rigControlConfiguration.hamlibEnableFreqModeChanges || wxGetApp().appConfiguration.rigControlConfiguration.hamlibEnableFreqChangesOnly) &&
-                    wxGetApp().appConfiguration.reportingConfiguration.reportingFrequency > 0)
+                    (!saveRestoreFrequency || wxGetApp().appConfiguration.reportingConfiguration.reportingFrequency > 0))
                 {
-                    wxGetApp().rigFrequencyController->setFrequency(wxGetApp().appConfiguration.reportingConfiguration.reportingFrequency);
+                    if (saveRestoreFrequency)
+                    {
+                        wxGetApp().rigFrequencyController->setFrequency(wxGetApp().appConfiguration.reportingConfiguration.reportingFrequency);
+                    }
         
                     if (wxGetApp().appConfiguration.rigControlConfiguration.hamlibEnableFreqModeChanges)
                     {
@@ -3219,9 +3228,23 @@ void MainFrame::stopRxStream()
 
             // The TX thread saved the leveler's final gain state into the
             // in-memory config as it exited; write it out now. Flush() so
-            // it reaches disk on every Stop, not only at app exit.
-            wxGetApp().appConfiguration.save(pConfig);
-            pConfig->Flush();
+            // it reaches disk on every Stop, not only at app exit. This
+            // reads settings the UI thread can change while we're stopping
+            // (e.g. the reporting frequency, as the radio goes back to where
+            // it was before Start), so do it there. At exit we're already
+            // on the UI thread and waiting for it would never return.
+            auto saveConfig = [&]() {
+                wxGetApp().appConfiguration.save(pConfig);
+                pConfig->Flush();
+            };
+            if (wxIsMainThread())
+            {
+                saveConfig();
+            }
+            else
+            {
+                executeOnUiThreadAndWait_(saveConfig);
+            }
         }
 
         if (m_rxThread)

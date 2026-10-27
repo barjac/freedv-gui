@@ -418,6 +418,11 @@ also enabled, this frequency will automatically remain in sync with the current 
 frequency is changed in the application, the radio will also change its frequency). Double-clicking on users in 
 the Tools->FreeDV Reporter window will also cause this frequency to change to match the other user.
 
+By default, pushing Start sets the radio to the frequency FreeDV last used, and pushing Stop returns the radio to the
+frequency and mode it had before Start. To leave the radio's frequency alone instead (FreeDV shows the radio's current
+frequency on Start, and the radio stays where it is on Stop), uncheck "Save and restore the frequency on start and stop"
+in Settings->Edit Settings->Rig Control. This applies to both Hamlib and OmniRig.
+
 *Note: in some setups (such as when using ALE), it is not preferred to have the reporting frequency automatically be 
 in sync with the radio. For example, in the case of ALE, the radio's frequency changes multiple times per second while
 waiting for a contact, which is faster than FreeDV can pull the latest from the radio (every five seconds). This can 
@@ -876,7 +881,8 @@ LDPC | Low Density Parity Check Codes - a family of powerful FEC codes
     * Add infrastructure for translating FreeDV into other languages. (PR #1526)
     * Hamlib: only allow selecting a PTT serial device when using RTS or DTR for PTT. (PR #1544)
     * Improved ease of use when adjusting predefined frequencies. (PR #1570, #1581) - thanks @barjac!
-    * Improved Level metering and AGC for easier input level adjustment. (PR #1532) - thanks @barjac!
+    * Improved Level metering and AGC for easier input level adjustment. (PR #1532, #1599, #1604) - thanks @barjac!
+    * Hamlib/OmniRig: add option to disable saving and restoring the radio's frequency on start and stop. (PR #1600)
 2. Bugfixes:
     * Fix silence being mixed into the first half second of each transmission, and holes in the signal at its start. (PR #1562)
 3. Build system:
@@ -916,7 +922,7 @@ LDPC | Low Density Parity Check Codes - a family of powerful FEC codes
     * PulseAudio: give each device its own connection. (PR #1523)
     * Fix possible deadlock on playback completion. (PR #1533)
     * Windows: add logic to detect audio device stalls. (PR #1537)
-    * Keep RX muted after TX until the radio confirms PTT off. (PR #1536)
+    * Keep RX muted after TX until the radio confirms PTT off. (PR #1536, #1602, #1603, #1605)
     * Fix FreeDV hanging when starting the Voice Keyer with a cloud-backed file. (PR #1534)
     * Fix data races on settings read by the audio threads. (PR #1535)
     * Prevent a closed network connection from terminating FreeDV with SIGPIPE. (PR #1540)
