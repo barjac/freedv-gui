@@ -24,7 +24,7 @@ void MainFrame::OnTogBtnVoiceKeyerClick (wxCommandEvent& event)
         g_recVoiceKeyerFile.store(false, std::memory_order_relaxed);
         sf_close(g_sfRecMicFile.load(std::memory_order_acquire));
         g_sfRecMicFile.store(nullptr, std::memory_order_release);
-        SetStatusText(wxT(""));
+        ShowPlaybackStatus(wxT(""));
         g_mutexProtectingCallbackData.Unlock();
         
         // Cache the newly recorded file for playback.
@@ -129,7 +129,7 @@ void MainFrame::OnRecordNewVoiceKeyerFile( wxCommandEvent& )
         return;
     }
 
-    SetStatusText(wxString::Format(_("Recording file %s from microphone"), soundFile), 0);
+    ShowPlaybackStatus(wxString::Format(_("Recording file %s from microphone"), wxFileName(soundFile).GetFullName()));
     g_recVoiceKeyerFile.store(true, std::memory_order_relaxed);
     vkFileName_ = soundFile;
     
@@ -305,7 +305,7 @@ int MainFrame::VoiceKeyerStartTx(void)
             g_sfPlayFileReader = std::move(tmpPlayFileReader);
         }
         
-        SetStatusText(wxString::Format(_("Voice Keyer: Playing file %s to mic input"), wxString::FromUTF8(vkFileName_.c_str())), 0);
+        ShowPlaybackStatus(wxString::Format(_("Voice Keyer: Playing file %s to mic input"), wxFileName(wxString::FromUTF8(vkFileName_.c_str())).GetFullName()));
         g_loopPlayFileToMicIn.store(false, std::memory_order_relaxed);
         g_playFileToMicIn.store(true, std::memory_order_release);
 

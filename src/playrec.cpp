@@ -81,7 +81,7 @@ void MainFrame::StopPlayFileToMicIn(void)
             g_sfPlayFile.store(nullptr, std::memory_order_release);
             g_sfPlayFileReader = nullptr;
         }
-        SetStatusText(wxT(""));
+        ShowPlaybackStatus(wxT(""));
         VoiceKeyerProcessEvent(VK_PLAY_FINISHED);
     }
     g_mutexProtectingCallbackData.Unlock();
@@ -99,7 +99,7 @@ void MainFrame::StopPlaybackFileFromRadio()
             sf_close(tmp);
             g_sfPlayFileFromRadio.store(nullptr, std::memory_order_release);
         }
-        SetStatusText(wxT(""));
+        ShowPlaybackStatus(wxT(""));
         m_menuItemPlayFileFromRadio->SetItemLabel(wxString(_("Start Play File - From Radio...")));
     }
     g_mutexProtectingCallbackData.Unlock();
@@ -192,15 +192,16 @@ void MainFrame::OnPlayFileFromRadio(wxCommandEvent& event)
                 (g_pathDialogTestHook && g_pathDialogTestOptions[wxT("loop")]),
             std::memory_order_relaxed);
 
+        wxString displayName = fileName + wxT(".") + extension;
         wxString statusText = "";
         if(extension == wxT("raw")) {
-            statusText = wxString::Format(_("Playing raw file %s as radio input (assuming Fs=%d)"), soundFile, (int)sfInfo.samplerate);
+            statusText = wxString::Format(_("Playing raw file %s as radio input (assuming Fs=%d)"), displayName, (int)sfInfo.samplerate);
         }
         else
         {
-            statusText = wxString::Format(_("Playing file %s as radio input"), soundFile);
+            statusText = wxString::Format(_("Playing file %s as radio input"), displayName);
         }
-        SetStatusText(statusText, 0);
+        ShowPlaybackStatus(statusText);
         log_debug("OnPlayFileFromRadio:: Playing File Fs = %d", (int)sfInfo.samplerate);
         m_menuItemPlayFileFromRadio->SetItemLabel(wxString(_("Stop Play File - From Radio...")));
         g_playFileFromRadio.store(true, std::memory_order_release);
@@ -218,7 +219,7 @@ void MainFrame::StopRecFileFromRadio()
         sf_close(g_sfRecFile.load(std::memory_order_acquire));
         g_sfRecFile.store(nullptr, std::memory_order_release);
         g_sfRecFileFromModulator = nullptr;
-        SetStatusText(wxT(""));
+        ShowPlaybackStatus(wxT(""));
         
         g_mutexProtectingCallbackData.Unlock();
         
@@ -236,7 +237,7 @@ void MainFrame::StopRecFileFromDecoder()
         g_recFileFromDecoder.store(false, std::memory_order_release);
         sf_close(g_sfRecDecoderFile.load(std::memory_order_acquire));
         g_sfRecDecoderFile.store(nullptr, std::memory_order_release);
-        SetStatusText(wxT(""));
+        ShowPlaybackStatus(wxT(""));
         
         g_mutexProtectingCallbackData.Unlock();
         
@@ -388,17 +389,17 @@ void MainFrame::OnTogBtnRecord(wxCommandEvent& event)
             wxString statusText;
             if (recordDialog.isRawRecording() && recordDialog.isDecodedRecording())
             {
-                statusText = wxString::Format(_("Recording file %s from radio and file %s from decoder"), soundFileRaw, soundFileDecoded);
+                statusText = wxString::Format(_("Recording file %s from radio and file %s from decoder"), wxFileName(soundFileRaw).GetFullName(), wxFileName(soundFileDecoded).GetFullName());
             }
             else if (recordDialog.isRawRecording())
             {
-                statusText = wxString::Format(_("Recording file %s from radio"), soundFileRaw);
+                statusText = wxString::Format(_("Recording file %s from radio"), wxFileName(soundFileRaw).GetFullName());
             }
             else
             {
-                statusText = wxString::Format(_("Recording file %s from decoder"), soundFileDecoded);
+                statusText = wxString::Format(_("Recording file %s from decoder"), wxFileName(soundFileDecoded).GetFullName());
             }
-            SetStatusText(statusText, 0);
+            ShowPlaybackStatus(statusText);
 
             m_audioRecord->SetValue(true);
             m_audioRecord->SetBackgroundColour(*wxRED);

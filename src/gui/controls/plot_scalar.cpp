@@ -714,7 +714,7 @@ void PlotScalar::drawGraticuleFast(wxGraphicsContext* ctx, bool repaintDataOnly)
 
     if (!repaintDataOnly)
     {
-        wxGraphicsFont tmpFont = ctx->CreateFont(GetFont(), GetForegroundColour());
+        wxGraphicsFont tmpFont = ctx->CreateFont(GetFont(), GetGroupBoxForegroundColour());
         ctx->SetFont(tmpFont);
     }
  
@@ -869,7 +869,7 @@ void PlotScalar::drawGraticuleFast(wxGraphicsContext* ctx, bool repaintDataOnly)
 //----------------------------------------------------------------
 // OnSize()
 //----------------------------------------------------------------
-void PlotScalar::OnSize(wxSizeEvent&)
+void PlotScalar::OnSize(wxSizeEvent& event)
 {
     leftOffset_ = 0;
     bottomOffset_ = 0;
@@ -911,6 +911,8 @@ void PlotScalar::OnSize(wxSizeEvent&)
     // draw() rebuilds the plot area at the new size.
     plotSurfaceBMP_ = wxGraphicsBitmap();
     plotSurface_ = nullptr;
+
+    event.Skip();
 }
 
 //----------------------------------------------------------------

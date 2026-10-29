@@ -106,7 +106,7 @@ PlotSpectrum::~PlotSpectrum()
 //----------------------------------------------------------------
 // OnSize()
 //----------------------------------------------------------------
-void PlotSpectrum::OnSize(wxSizeEvent&) {
+void PlotSpectrum::OnSize(wxSizeEvent& event) {
     // Determine correct left offset based on font size
     int text_w = 0;
     int text_h = 0;
@@ -120,6 +120,7 @@ void PlotSpectrum::OnSize(wxSizeEvent&) {
         bottomOffset_ = std::max(bottomOffset_, text_h);
     }
     bottomOffset_ = std::max(bottomOffset_, (int)YBOTTOM_OFFSET);
+    event.Skip();
 }
 
 //----------------------------------------------------------------
@@ -231,7 +232,7 @@ void PlotSpectrum::drawGraticuleLines_(wxGraphicsContext* ctx)
     float    f, mag, freq_hz_to_px, mag_dB_to_py;
 
     wxBrush ltGraphBkgBrush;
-    wxColour foregroundColor = wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOWTEXT);
+    wxColour foregroundColor = GetGroupBoxForegroundColour();
     ltGraphBkgBrush.SetStyle(wxBRUSHSTYLE_TRANSPARENT);
     ltGraphBkgBrush.SetColour(foregroundColor);
     ctx->SetBrush(ltGraphBkgBrush);
@@ -281,7 +282,7 @@ void PlotSpectrum::drawGraticuleLabels_(wxGraphicsContext* ctx)
     char     buf[STR_LENGTH];
     float    f, mag, freq_hz_to_px, mag_dB_to_py;
 
-    wxGraphicsFont tmpFont = ctx->CreateFont(GetFont(), GetForegroundColour());
+    wxGraphicsFont tmpFont = ctx->CreateFont(GetFont(), GetGroupBoxForegroundColour());
     ctx->SetFont(tmpFont);
 
     freq_hz_to_px = (float)m_rGrid.GetWidth()/(MAX_F_HZ-MIN_F_HZ);
@@ -342,7 +343,7 @@ void PlotSpectrum::drawGraticuleFast(wxGraphicsContext* ctx, bool repaintDataOnl
     // sizes are already in physical pixels (GetDPIScaleFactor() would make the bitmap twice
     // too big there, and it'd be drawn at half size).
     key.scale = GetContentScaleFactor();
-    key.lineColour = wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOWTEXT);
+    key.lineColour = GetGroupBoxForegroundColour();
     key.minMagDb = m_min_mag_db;
     key.maxMagDb = m_max_mag_db;
     key.leftOffset = leftOffset_;
